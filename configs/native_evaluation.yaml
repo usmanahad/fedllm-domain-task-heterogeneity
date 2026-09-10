@@ -1,0 +1,16 @@
+# lm-evaluation-harness task aliases vary by installed version. This manifest
+# records the intended suites and keeps execution separate from training.
+general:
+  metrics: [accuracy]
+  tasks: [mmlu]
+finance:
+  metrics: [accuracy, f1]
+  tasks: [financial_phrasebank, fiqa_sa, tfns]
+medical:
+  metrics: [accuracy]
+  tasks: [pubmedqa, medmcqa, medqa_4options, careqa]
+code:
+  metrics: [pass_at_1]
+  tasks: [mbpp, humaneval, multiple_py]
+  allow_code_execution: false
+

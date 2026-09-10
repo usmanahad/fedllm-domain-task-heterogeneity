@@ -1,0 +1,5 @@
+# Optional: only needed for `flwr run`. The recommended one-P100 path uses
+# the repository's sequential `run-local` command and does not need Ray.
+flwr[simulation]==1.17.0
+flwr-datasets==0.3.0
+

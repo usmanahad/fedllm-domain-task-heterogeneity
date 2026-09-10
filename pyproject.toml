@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fedllm-heterogeneity"
+version = "0.1.0"
+description = "FlowerTune-based experiments disentangling domain and task heterogeneity in federated LLM fine-tuning"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+license = { text = "Apache-2.0" }
+dependencies = [
+  "numpy>=1.26",
+  "pandas>=2.1",
+  "pyyaml>=6.0",
+  "scipy>=1.11",
+  "torch>=2.2",
+]
+
+[project.optional-dependencies]
+train = [
+  "accelerate>=0.33",
+  "datasets>=2.20",
+  "peft>=0.12",
+  "transformers>=4.44",
+]
+flower = [
+  "flwr[simulation]>=1.17,<2",
+  "flwr-datasets>=0.3",
+]
+eval = [
+  "lm-eval>=0.4.8",
+]
+dev = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+fedllm-heterogeneity = "fedllm_heterogeneity.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.flwr.app]
+publisher = "fred-research"
+
+[tool.flwr.app.components]
+serverapp = "fedllm_heterogeneity.flower_app:server_app"
+clientapp = "fedllm_heterogeneity.flower_app:client_app"
+
+[tool.flwr.app.config]
+experiment-config = "configs/controlled_qwen.yaml"
+examples = "artifacts/controlled_examples.jsonl"
+partitions = "artifacts/partitions-coupled.json"
+aggregation = "fedex_lora"
+output = "artifacts/flower-run"
+seed = 42
+
+[tool.flwr.federations]
+default = "local-simulation"
+
+[tool.flwr.federations.local-simulation]
+options.num-supernodes = 16
+options.backend.client-resources.num-cpus = 2
+options.backend.client-resources.num-gpus = 1.0
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

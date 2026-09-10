@@ -1,0 +1,56 @@
+name: controlled-qwen-0.5b
+track: controlled
+seed: 42
+num_clients: 16
+rounds: 8
+regimes:
+  - iid
+  - domain_only
+  - task_only
+  - coupled
+aggregators:
+  - fedex_lora
+  - factor_fedavg
+  - ffa_lora
+  - svd_effective
+
+data:
+  tasks: [continuation, span_reconstruction]
+  datasets:
+    general: flwrlabs/alpaca-gpt4
+    finance: flwrlabs/fingpt-sentiment-train
+    medical: flwrlabs/medical-meadow-medical-flashcards
+    code: flwrlabs/code-alpaca-20k
+  # Pin immutable Hugging Face revisions here before producing final results.
+  revisions: {}
+  counts:
+    train: 512
+    validation: 128
+    test: 256
+
+model:
+  id: Qwen/Qwen2.5-0.5B-Instruct
+  quantization_bits: null
+  lora_rank: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  lora_targets: [q_proj, v_proj]
+  ffa_lora: false
+
+train:
+  learning_rate: 0.0002
+  batch_size: 4
+  local_steps: 10
+  max_length: 512
+  weight_decay: 0.0
+  gradient_clip_norm: 1.0
+
+analysis:
+  equivalence_margin: -0.05
+  worst_cell_margin: -0.10
+  bootstrap_samples: 10000
+  confidence: 0.95
+  diagnostic_rounds: [1, 8]
+  probe_examples_per_cell: 16
+  mitigation_macro_trigger: -0.05
+  mitigation_worst_cell_trigger: -0.10

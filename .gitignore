@@ -1,0 +1,33 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+.DS_Store
+.ipynb_checkpoints/
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+artifacts/
+.cache/
+wandb/
+
+# Hugging Face/model caches and generated checkpoints must not enter Git.
+hf-cache/
+**/huggingface/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Local secrets and machine-specific configuration.
+.env
+.env.*
+!.env.example
+
+# Local research inputs and the upload-only Kaggle launcher are intentionally
+# excluded from the public repository.
+/Proposal-Non-IID-Federated-LLMs.pdf
+/GulzarPapers/
+/kaggle-p100-runner.ipynb

@@ -1,0 +1,35 @@
+name: controlled-qwen-1.5b-scale-check
+track: controlled
+seed: 42
+num_clients: 16
+rounds: 8
+regimes: [iid, coupled]
+aggregators: [fedex_lora]
+
+data:
+  tasks: [continuation, span_reconstruction]
+  datasets:
+    general: flwrlabs/alpaca-gpt4
+    finance: flwrlabs/fingpt-sentiment-train
+    medical: flwrlabs/medical-meadow-medical-flashcards
+    code: flwrlabs/code-alpaca-20k
+  revisions: {}
+  counts: {train: 512, validation: 128, test: 256}
+
+model:
+  id: Qwen/Qwen2.5-1.5B-Instruct
+  quantization_bits: 4
+  lora_rank: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  lora_targets: [q_proj, v_proj]
+
+train:
+  learning_rate: 0.0002
+  batch_size: 4
+  local_steps: 10
+  max_length: 512
+  weight_decay: 0.0
+  gradient_clip_norm: 1.0
+
+analysis: {equivalence_margin: -0.05, worst_cell_margin: -0.10}
