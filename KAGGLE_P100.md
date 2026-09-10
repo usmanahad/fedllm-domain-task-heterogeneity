@@ -180,6 +180,26 @@ Kaggle output Dataset between sessions.
 Repeat the three reference commands for seeds 43 and 44 before treating the
 confidence intervals as final.
 
+## 9. Create a small download archive
+
+Do not zip the whole `artifacts` directory: `.pt` adapters and FedEx base
+residuals are large. Package only the JSON measurements, tabular evaluations,
+manifests, configs, dependency pins, and Git revision with maximum ZIP
+compression:
+
+```python
+%cd /kaggle/working/Fred
+!python scripts/package_results.py \
+  --project /kaggle/working/Fred \
+  --artifacts /kaggle/working/Fred/artifacts \
+  --output /kaggle/working/fedllm-results.zip
+```
+
+Download `/kaggle/working/fedllm-results.zip`. Adapter checkpoints (`*.pt`),
+effective-weight residuals, generated datasets/partitions, and smoke artifacts
+are excluded. They remain in `/kaggle/working/Fred/artifacts` until the Kaggle
+session ends in case model export is needed.
+
 ## Optional: Flower/Ray execution
 
 The sequential runner above is scientifically equivalent for full client

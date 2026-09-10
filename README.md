@@ -60,6 +60,10 @@ Then follow the pinned P100 setup in [`KAGGLE_P100.md`](KAGGLE_P100.md), startin
 at the PyTorch installation step. The copy-from-`/kaggle/input` step is not
 needed when the project is cloned.
 
+The local upload-only `kaggle-p100-runner.ipynb` automates the complete sequence
+and finishes by creating a compact results-only ZIP. The notebook and research
+PDF inputs are intentionally excluded from this public repository.
+
 ## Prepare the controlled dataset
 
 ```bash
