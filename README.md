@@ -60,9 +60,10 @@ Then follow the pinned P100 setup in [`KAGGLE_P100.md`](KAGGLE_P100.md), startin
 at the PyTorch installation step. The copy-from-`/kaggle/input` step is not
 needed when the project is cloned.
 
-The local upload-only `kaggle-p100-runner.ipynb` automates the complete sequence
-and finishes by creating a compact results-only ZIP. The notebook and research
-PDF inputs are intentionally excluded from this public repository.
+The local upload-only `kaggle-p100-runner.ipynb` automates the three-seed FedEx
+matrix across IID, domain-only, task-only, and coupled partitions. It emits one
+compact ZIP per seed/regime as soon as that run finishes. The notebook and
+research PDF inputs are intentionally excluded from this public repository.
 
 ## Prepare the controlled dataset
 
@@ -168,9 +169,10 @@ provided and should only run in an isolated Kaggle runtime.
   weighting is enabled only after attribution is validated against measured
   leave-one-client-out effects.
 
-Selected diagnostic rounds save the individual client adapter states needed by
-the official [ProToken artifact](https://github.com/ahmayun/protoken). ProToken
-itself is not vendored: its reference reproduction targets an A100-class Linux
-machine with substantially more RAM/storage than a normal Kaggle session. This
-package supplies the client checkpoints and implements the causal validation
-and guarded reweighting stage that ProToken does not provide.
+The P100 configuration evaluates functional transfer at rounds 1 and 8 and, at
+round 8, compares the full FedEx aggregate with 16 leave-one-client-out
+aggregates on every domain-task cell. Checkpoint saving is disabled there to
+keep Kaggle outputs small; the JSON diagnostics needed for causal client-harm
+analysis are retained. ProToken itself is not vendored because its reference
+reproduction targets an A100-class Linux machine with substantially more
+RAM/storage than a normal Kaggle session.

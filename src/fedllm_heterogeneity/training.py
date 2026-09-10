@@ -280,18 +280,31 @@ def common_checkpoint_gradient(
     adapter_state: TensorState,
     examples: Sequence[CanonicalExample],
     max_length: int = 512,
+    microbatch_size: int | None = None,
 ) -> dict[str, torch.Tensor]:
-    """True one-batch gradient evaluated from a supplied shared checkpoint."""
+    """Token-mean gradient at a shared checkpoint, accumulated in microbatches."""
 
     set_adapter_state(model, adapter_state)
     model.train()
     dataset = TokenizedExamples(examples, tokenizer, max_length)
-    batch = make_collator(tokenizer.pad_token_id)(
-        [dataset[index] for index in range(len(dataset))]
+    loader = DataLoader(
+        dataset,
+        batch_size=microbatch_size or len(dataset),
+        shuffle=False,
+        collate_fn=make_collator(tokenizer.pad_token_id),
     )
-    batch = {key: value.to(_device(model)) for key, value in batch.items()}
     model.zero_grad(set_to_none=True)
-    model(**batch).loss.backward()
+    total_tokens = 0
+    for batch in loader:
+        batch = {key: value.to(_device(model)) for key, value in batch.items()}
+        target_tokens = int((batch["labels"] != -100).sum().item())
+        (model(**batch).loss * target_tokens).backward()
+        total_tokens += target_tokens
+    if total_tokens == 0:
+        raise ValueError("Gradient probe contains no target tokens")
+    for parameter in model.parameters():
+        if parameter.grad is not None:
+            parameter.grad.div_(total_tokens)
     return {
         name: parameter.grad.detach().cpu().clone()
         for name, parameter in model.named_parameters()

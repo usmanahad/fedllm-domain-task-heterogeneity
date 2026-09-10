@@ -76,17 +76,49 @@ def package_results(
 
     included_bytes = sum(path.stat().st_size for path in selected)
     omitted_bytes = sum(path.stat().st_size for path in candidates if path not in selected)
+    project_artifacts = project / "artifacts"
+
+    def result_archive_path(path: Path) -> Path:
+        try:
+            return Path("artifacts") / path.relative_to(project_artifacts)
+        except ValueError:
+            return Path("artifacts") / path.relative_to(artifacts)
+
     with ZipFile(output, "w", compression=ZIP_DEFLATED, compresslevel=9) as archive:
+        written: set[str] = set()
+
+        def add_file(path: Path, archive_path: Path) -> None:
+            key = archive_path.as_posix()
+            if key not in written:
+                archive.write(path, archive_path)
+                written.add(key)
+
         for path in selected:
-            archive.write(path, Path("artifacts") / path.relative_to(artifacts))
+            add_file(path, result_archive_path(path))
+        data_manifest = project / "artifacts/controlled_examples.jsonl.manifest.json"
+        if data_manifest.is_file():
+            add_file(data_manifest, Path("provenance/data-manifest.json"))
+        seed_root = next(
+            (
+                path
+                for path in (artifacts, *artifacts.parents)
+                if path.name.startswith("seed-")
+            ),
+            None,
+        )
+        if seed_root is not None:
+            for arm in ("base", "centralized"):
+                reference = seed_root / arm / "summary.json"
+                if reference.is_file():
+                    add_file(reference, Path("references") / arm / "summary.json")
         for relative in PROVENANCE_FILES:
             path = project / relative
             if path.is_file():
-                archive.write(path, Path("provenance") / relative)
+                add_file(path, Path("provenance") / relative)
         configs = project / "configs"
         if configs.is_dir():
             for path in sorted(configs.glob("*.yaml")):
-                archive.write(path, Path("provenance/configs") / path.name)
+                add_file(path, Path("provenance/configs") / path.name)
         archive.writestr("provenance/git-commit.txt", git_revision(project) + "\n")
 
     return len(selected), included_bytes, omitted_bytes

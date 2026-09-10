@@ -31,6 +31,9 @@ class ExperimentConfig:
     worst_cell_margin: float = -0.10
     diagnostic_rounds: tuple[int, ...] = (1, 8)
     probe_examples_per_cell: int = 16
+    gradient_probe_examples_per_client: int = 2
+    leave_one_out_rounds: tuple[int, ...] = (8,)
+    save_checkpoints: bool = True
 
 
 def _require(mapping: Mapping[str, Any], key: str) -> Any:
@@ -98,4 +101,12 @@ def load_config(path: str | Path) -> ExperimentConfig:
         worst_cell_margin=float(analysis.get("worst_cell_margin", -0.10)),
         diagnostic_rounds=tuple(int(value) for value in analysis.get("diagnostic_rounds", [1, int(raw.get("rounds", 8))])),
         probe_examples_per_cell=int(analysis.get("probe_examples_per_cell", 16)),
+        gradient_probe_examples_per_client=int(
+            analysis.get("gradient_probe_examples_per_client", train_config.batch_size)
+        ),
+        leave_one_out_rounds=tuple(
+            int(value)
+            for value in analysis.get("leave_one_out_rounds", [int(raw.get("rounds", 8))])
+        ),
+        save_checkpoints=bool(raw.get("save_checkpoints", True)),
     )

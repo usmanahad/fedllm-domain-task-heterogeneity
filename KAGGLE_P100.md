@@ -114,10 +114,23 @@ Run once. All experimental runs reuse these exact files.
   --partitions artifacts/partitions-coupled.json
 ```
 
-## 7. Run one primary experiment
+## 7. Run the FedEx matrix
 
-Use one sequential job at a time. The three arguments are training seed,
-partition regime, and aggregation method.
+The local upload-only runner executes three seeds (`42`, `43`, `44`) for IID,
+domain-only, task-only, and coupled partitions: 12 FedEx runs total. At round 8
+it records the full aggregate and all 16 leave-one-client-out aggregates on
+each domain-task probe cell. Each completed run is immediately packaged as:
+
+```text
+/kaggle/working/fedllm-result-zips/seed-<seed>__<regime>__fedex_lora.zip
+```
+
+The completion check requires the final leave-one-out result, so an older
+coupled run without that diagnostic is rerun automatically. Completed matrix
+runs are skipped unless `FORCE_RERUN = True` in the notebook.
+
+To launch an individual run manually, use one sequential job at a time. The
+three arguments are training seed, partition regime, and aggregation method.
 
 ```python
 %cd /kaggle/working/Fred
@@ -195,10 +208,11 @@ compression:
   --output /kaggle/working/fedllm-results.zip
 ```
 
-Download `/kaggle/working/fedllm-results.zip`. Adapter checkpoints (`*.pt`),
-effective-weight residuals, generated datasets/partitions, and smoke artifacts
-are excluded. They remain in `/kaggle/working/Fred/artifacts` until the Kaggle
-session ends in case model export is needed.
+The upload-only runner already creates the 12 separate archives. The command
+above is only for manually packaging all available results together. Adapter
+checkpoints (`*.pt`), effective-weight residuals, generated datasets/partitions,
+and smoke artifacts are excluded. The P100 configuration also disables writing
+new checkpoints, so only the compact JSON measurements are retained.
 
 ## Optional: Flower/Ray execution
 

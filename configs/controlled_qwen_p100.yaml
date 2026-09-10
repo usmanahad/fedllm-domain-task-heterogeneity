@@ -1,6 +1,7 @@
 name: controlled-qwen-0.5b-p100
 track: controlled
 seed: 42
+save_checkpoints: false
 num_clients: 16
 rounds: 8
 regimes: [iid, domain_only, task_only, coupled]
@@ -42,7 +43,8 @@ analysis:
   bootstrap_samples: 10000
   confidence: 0.95
   diagnostic_rounds: [1, 8]
-  probe_examples_per_cell: 8
+  probe_examples_per_cell: 32
+  gradient_probe_examples_per_client: 8
+  leave_one_out_rounds: [8]
   mitigation_macro_trigger: -0.05
   mitigation_worst_cell_trigger: -0.10
-

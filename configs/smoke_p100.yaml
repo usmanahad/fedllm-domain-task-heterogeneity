@@ -1,6 +1,7 @@
 name: smoke-qwen-0.5b-p100
 track: controlled
 seed: 42
+save_checkpoints: false
 num_clients: 8
 rounds: 1
 regimes: [coupled]
@@ -38,4 +39,5 @@ analysis:
   worst_cell_margin: -0.10
   diagnostic_rounds: [1]
   probe_examples_per_cell: 2
-
+  gradient_probe_examples_per_client: 2
+  leave_one_out_rounds: []

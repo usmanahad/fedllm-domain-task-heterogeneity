@@ -36,6 +36,43 @@ def _cell_groups(
     return dict(grouped)
 
 
+def _leave_one_out_payload(
+    client_ids: Sequence[str],
+    cells: Sequence[str],
+    full_aggregate_nll: dict[str, float],
+    without_client_nll: Sequence[Sequence[float]],
+) -> dict[str, object]:
+    """Summarize loss-based leave-one-client-out effects with an explicit sign."""
+
+    if len(client_ids) != len(without_client_nll):
+        raise ValueError("Each client must have one leave-one-out result row")
+    if not cells:
+        raise ValueError("Leave-one-out analysis needs at least one evaluation cell")
+    if set(cells) != set(full_aggregate_nll):
+        raise ValueError("Full-aggregate NLL keys must match the evaluation cells")
+    deltas = []
+    for row in without_client_nll:
+        if len(row) != len(cells):
+            raise ValueError("Each leave-one-out row must contain every evaluation cell")
+        deltas.append(
+            [value - full_aggregate_nll[cell] for value, cell in zip(row, cells)]
+        )
+    macro_deltas = [sum(row) / len(row) for row in deltas]
+    return {
+        "definition": (
+            "loss_delta_without_client_minus_full < 0 means removing the client "
+            "improves NLL; client_harm_score > 0 therefore means harmful"
+        ),
+        "client_ids": list(client_ids),
+        "cells": list(cells),
+        "full_aggregate_nll": full_aggregate_nll,
+        "without_client_nll_matrix": [list(row) for row in without_client_nll],
+        "loss_delta_without_client_minus_full_matrix": deltas,
+        "macro_loss_delta_without_client_minus_full": macro_deltas,
+        "client_harm_score": [-value for value in macro_deltas],
+    }
+
+
 def run_federated(
     config: ExperimentConfig,
     examples: Sequence[CanonicalExample],
@@ -70,12 +107,15 @@ def run_federated(
         global_effective = effective_lora_delta(global_state, config.model.scaling)
         local_effective_updates = []
         true_gradients = []
-        diagnostic_round = round_id in config.diagnostic_rounds
+        leave_one_out_round = round_id in config.leave_one_out_rounds
+        diagnostic_round = round_id in set(config.diagnostic_rounds).union(
+            config.leave_one_out_rounds
+        )
         for position, (client_id, ids) in enumerate(sorted(partitions.assignments.items())):
             client_examples = [lookup[example_id] for example_id in ids]
             if diagnostic_round:
                 probe = sorted(client_examples, key=lambda item: item.example_id)[
-                    : config.train.batch_size
+                    : config.gradient_probe_examples_per_client
                 ]
                 true_gradients.append(
                     common_checkpoint_gradient(
@@ -84,6 +124,7 @@ def run_federated(
                         global_state,
                         probe,
                         max_length=config.train.max_length,
+                        microbatch_size=config.train.eval_batch_size,
                     )
                 )
             client_train_config = replace(
@@ -160,7 +201,9 @@ def run_federated(
                 },
             }
 
-        aggregation = aggregator.aggregate(global_state, client_updates)
+        previous_global_state = global_state
+        previous_cumulative_residual = dict(cumulative_residual)
+        aggregation = aggregator.aggregate(previous_global_state, client_updates)
         global_state = dict(aggregation.adapter_state)
         if aggregation.base_residual:
             cumulative_residual = add_residuals(
@@ -174,7 +217,7 @@ def run_federated(
         weights = [float(update.num_examples) for update in client_updates]
         if diagnostic_round:
             normalized = [weight / sum(weights) for weight in weights]
-            aggregate_probe_delta = {
+            aggregate_probe_nll = {
                 cell: evaluate_nll(
                     model,
                     tokenizer,
@@ -183,8 +226,11 @@ def run_federated(
                     max_length=config.train.max_length,
                     batch_size=config.train.eval_batch_size,
                 )
-                - baseline_probe[cell]
                 for cell, values in sorted(probe_cells.items())
+            }
+            aggregate_probe_delta = {
+                cell: aggregate_probe_nll[cell] - baseline_probe[cell]
+                for cell in sorted(probe_cells)
             }
             weighted_client_delta = {
                 cell: sum(
@@ -194,14 +240,60 @@ def run_federated(
                 for column, cell in enumerate(sorted(probe_cells))
             }
             diagnostic_payload["functional_transfer"]["aggregate_loss_delta"] = aggregate_probe_delta
+            diagnostic_payload["functional_transfer"]["aggregate_nll"] = aggregate_probe_nll
             diagnostic_payload["functional_transfer"]["weighted_mean_client_loss_delta"] = weighted_client_delta
-            torch.save(
-                {
-                    update.client_id: dict(update.adapter_state)
-                    for update in client_updates
-                },
-                output_dir / f"client-adapters-round-{round_id:03d}.pt",
-            )
+            if leave_one_out_round:
+                without_client_nll: list[list[float]] = []
+                sorted_cells = sorted(probe_cells)
+                for removed_index, _ in enumerate(client_updates):
+                    retained = [
+                        update
+                        for index, update in enumerate(client_updates)
+                        if index != removed_index
+                    ]
+                    candidate = aggregator.aggregate(previous_global_state, retained)
+                    candidate_cumulative = add_residuals(
+                        previous_cumulative_residual,
+                        dict(candidate.base_residual),
+                    )
+                    candidate_applied = set_cumulative_base_residual(
+                        model,
+                        candidate_cumulative,
+                        applied_residual,
+                    )
+                    candidate_state = dict(candidate.adapter_state)
+                    row = [
+                        evaluate_nll(
+                            model,
+                            tokenizer,
+                            candidate_state,
+                            probe_cells[cell],
+                            max_length=config.train.max_length,
+                            batch_size=config.train.eval_batch_size,
+                        )
+                        for cell in sorted_cells
+                    ]
+                    without_client_nll.append(row)
+                    applied_residual = set_cumulative_base_residual(
+                        model,
+                        cumulative_residual,
+                        candidate_applied,
+                    )
+                    set_adapter_state(model, global_state)
+                diagnostic_payload["leave_one_out_aggregation"] = _leave_one_out_payload(
+                    [update.client_id for update in client_updates],
+                    sorted_cells,
+                    aggregate_probe_nll,
+                    without_client_nll,
+                )
+            if config.save_checkpoints:
+                torch.save(
+                    {
+                        update.client_id: dict(update.adapter_state)
+                        for update in client_updates
+                    },
+                    output_dir / f"client-adapters-round-{round_id:03d}.pt",
+                )
         cell_nll = {
             cell: evaluate_nll(
                 model,
@@ -230,22 +322,33 @@ def run_federated(
             json.dumps(logs, indent=2, sort_keys=True) + "\n"
         )
 
-    torch.save(global_state, output_dir / "adapter_state.pt")
-    torch.save(cumulative_residual, output_dir / "base_residual.pt")
+    artifacts = {"rounds": "rounds.json"}
+    if config.save_checkpoints:
+        torch.save(global_state, output_dir / "adapter_state.pt")
+        torch.save(cumulative_residual, output_dir / "base_residual.pt")
+        artifacts.update(
+            {
+                "adapter_state": "adapter_state.pt",
+                "base_residual": "base_residual.pt",
+            }
+        )
     summary = {
         "experiment": config.name,
         "seed": config.seed,
         "regime": partitions.regime,
         "aggregation": aggregation_method,
         "rounds": config.rounds,
+        "num_clients": partitions.num_clients,
+        "partition_seed": partitions.seed,
+        "client_cell_weights": partitions.cell_weights,
         "example_pool_hash": partitions.example_pool_hash,
         "final_validation_nll": logs[-1]["validation_nll"],
-        "artifacts": {
-            "adapter_state": "adapter_state.pt",
-            "base_residual": "base_residual.pt",
-            "rounds": "rounds.json",
-        },
+        "artifacts": artifacts,
     }
+    if "leave_one_out_aggregation" in logs[-1]:
+        summary["final_leave_one_out_aggregation"] = logs[-1][
+            "leave_one_out_aggregation"
+        ]
     (output_dir / "summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n"
     )
@@ -304,7 +407,8 @@ def run_reference(
             config.model,
             central_config,
         )
-        torch.save(dict(trained.update.adapter_state), output_dir / "adapter_state.pt")
+        if config.save_checkpoints:
+            torch.save(dict(trained.update.adapter_state), output_dir / "adapter_state.pt")
         result = {
             "arm": arm,
             "steps": central_config.max_steps,
