@@ -6,7 +6,7 @@ import hashlib
 import json
 import random
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, MutableMapping, Protocol, Sequence
@@ -20,6 +20,25 @@ FLOWERTUNE_DATASETS: dict[str, str] = {
     Domain.MEDICAL.value: "flwrlabs/medical-meadow-medical-flashcards",
     Domain.CODE.value: "flwrlabs/code-alpaca-20k",
 }
+
+DATA_VERSIONS = ("legacy_v1", "clean_v2")
+
+# These are verified constant instructions in the pinned FlowerTune snapshots.
+# They are retained for native-task training but removed from controlled source
+# text in clean_v2 so the derived target cannot land inside a label prompt.
+FINANCE_NATIVE_INSTRUCTIONS = frozenset(
+    {
+        "What is the sentiment of this tweet? Please choose an answer from {negative/neutral/positive}.",
+        "What is the sentiment of this news? Please choose an answer from {negative/neutral/positive}.",
+        "What is the sentiment of this news? Please choose an answer from {strong negative/moderately negative/mildly negative/neutral/mildly positive/moderately positive/strong positive}.",
+    }
+)
+MEDICAL_NATIVE_INSTRUCTIONS = frozenset({"Answer this question truthfully"})
+FINANCE_INSTRUCTION_FRAGMENT_RE = re.compile(
+    r"(?i)(what is the sentiment of this (?:news|tweet)|please choose an answer from|choose an answer|answer from|negative/neutral|neutral/positive|strong negative|strong positive)"
+)
+FINANCE_LABEL_RE = re.compile(r"(?i)\b(positive|negative|neutral)\b")
+MEDICAL_INSTRUCTION_RE = re.compile(r"(?i)answer this question truthfully")
 
 
 class TokenizerLike(Protocol):
@@ -37,6 +56,7 @@ class SourceRecord:
     native_prompt: str
     native_target: str
     row_index: int
+    removed_native_boilerplate: str = ""
 
 
 @dataclass(frozen=True)
@@ -81,6 +101,7 @@ def adapt_flowertune_row(
     row: Mapping[str, Any],
     row_index: int,
     dataset: str | None = None,
+    data_version: str = "legacy_v1",
 ) -> SourceRecord | None:
     """Convert known FlowerTune schemas to a common, template-free record.
 
@@ -90,6 +111,8 @@ def adapt_flowertune_row(
     """
 
     domain = Domain(domain).value
+    if data_version not in DATA_VERSIONS:
+        raise ValueError(f"Unknown data version: {data_version}")
     dataset = dataset or FLOWERTUNE_DATASETS[domain]
     instruction = _first(row, "instruction", "question", "prompt", "Question")
     extra_input = _first(row, "input", "context")
@@ -98,15 +121,32 @@ def adapt_flowertune_row(
     )
 
     if domain == Domain.FINANCE.value:
-        source_text = _join(instruction, extra_input)
+        legacy_source_text = _join(instruction, extra_input)
     else:
-        source_text = _join(instruction, extra_input, response)
+        legacy_source_text = _join(instruction, extra_input, response)
+
+    controlled_instruction = instruction
+    removed_native_boilerplate = ""
+    if data_version == "clean_v2":
+        if domain == Domain.FINANCE.value and instruction in FINANCE_NATIVE_INSTRUCTIONS:
+            controlled_instruction = ""
+            removed_native_boilerplate = "finance_sentiment_instruction"
+        elif domain == Domain.MEDICAL.value and instruction in MEDICAL_NATIVE_INSTRUCTIONS:
+            controlled_instruction = ""
+            removed_native_boilerplate = "medical_truthfulness_instruction"
+
+    if domain == Domain.FINANCE.value:
+        source_text = _join(controlled_instruction, extra_input)
+    else:
+        source_text = _join(controlled_instruction, extra_input, response)
 
     native_prompt = _join(instruction, extra_input)
     if not source_text or not native_prompt or not response:
         return None
 
-    source_id = stable_hash(dataset, row_index, source_text)
+    # Anchor identity to the legacy source text. Cleaning therefore preserves
+    # source IDs for every row that remains eligible.
+    source_id = stable_hash(dataset, row_index, legacy_source_text)
     return SourceRecord(
         source_id=source_id,
         domain=domain,
@@ -115,6 +155,7 @@ def adapt_flowertune_row(
         native_prompt=native_prompt,
         native_target=response,
         row_index=row_index,
+        removed_native_boilerplate=removed_native_boilerplate,
     )
 
 
@@ -259,11 +300,68 @@ def select_source_splits(
     }
 
 
+def select_source_splits_with_anchor(
+    sources: Iterable[SourceRecord],
+    counts: BuildCounts,
+    seed: int,
+    anchored_row_indices: Mapping[str, Sequence[int]],
+) -> dict[str, list[SourceRecord]]:
+    """Preserve eligible legacy split rows and deterministically fill gaps.
+
+    Rows made ineligible by cleaning (predominantly short Finance statements)
+    are replaced from rows that were not present in any legacy split. Pinned
+    dataset revisions make row indices stable.
+    """
+
+    unique = {source.source_id: source for source in sources}
+    by_row = {source.row_index: source for source in unique.values()}
+    expected_counts = {
+        Split.TRAIN.value: counts.train,
+        Split.VALIDATION.value: counts.validation,
+        Split.TEST.value: counts.test,
+    }
+    anchored = {
+        split: tuple(int(value) for value in anchored_row_indices.get(split, ()))
+        for split in expected_counts
+    }
+    for split, expected in expected_counts.items():
+        if len(anchored[split]) != expected:
+            raise ValueError(
+                f"Anchor has {len(anchored[split])} {split} rows; expected {expected}"
+            )
+    all_anchored = [row for values in anchored.values() for row in values]
+    if len(all_anchored) != len(set(all_anchored)):
+        raise ValueError("Source split anchor contains duplicate row indices")
+
+    result = {
+        split: [by_row[row] for row in rows if row in by_row]
+        for split, rows in anchored.items()
+    }
+    reserved = set(all_anchored)
+    candidates = [source for source in unique.values() if source.row_index not in reserved]
+    used: set[str] = {
+        source.source_id for split_sources in result.values() for source in split_sources
+    }
+    for split, expected in expected_counts.items():
+        ordered = sorted(
+            (source for source in candidates if source.source_id not in used),
+            key=lambda item: stable_hash(seed, item.source_id, "anchor-replacement", split),
+        )
+        needed = expected - len(result[split])
+        if len(ordered) < needed:
+            raise ValueError(f"Need {needed} replacement sources for {split}, found {len(ordered)}")
+        replacements = ordered[:needed]
+        result[split].extend(replacements)
+        used.update(source.source_id for source in replacements)
+    return result
+
+
 def build_controlled_examples(
     sources_by_domain: Mapping[str, Iterable[SourceRecord]],
     tokenizer: TokenizerLike,
     counts: BuildCounts = BuildCounts(),
     seed: int = 42,
+    split_anchor: Mapping[str, Mapping[str, Sequence[int]]] | None = None,
 ) -> list[CanonicalExample]:
     examples: list[CanonicalExample] = []
     for domain in Domain:
@@ -273,7 +371,14 @@ def build_controlled_examples(
             for source in sources
             if len(tokenizer.encode(source.text, add_special_tokens=False)) >= 32
         ]
-        splits = select_source_splits(eligible, counts, seed)
+        if split_anchor is None:
+            splits = select_source_splits(eligible, counts, seed)
+        else:
+            if domain.value not in split_anchor:
+                raise ValueError(f"Split anchor is missing domain {domain.value}")
+            splits = select_source_splits_with_anchor(
+                eligible, counts, seed, split_anchor[domain.value]
+            )
         for split, split_sources in splits.items():
             for source in split_sources:
                 continuation = make_continuation(source, tokenizer, split, seed)
@@ -310,6 +415,7 @@ def load_flowertune_sources(
     split: str = "train",
     revision: str | None = None,
     cache_dir: str | None = None,
+    data_version: str = "legacy_v1",
 ) -> Iterator[SourceRecord]:
     """Download and adapt a FlowerTune dataset lazily.
 
@@ -330,7 +436,9 @@ def load_flowertune_sources(
         kwargs["cache_dir"] = cache_dir
     dataset = load_dataset(dataset_name, **kwargs)
     for index, row in enumerate(dataset):
-        adapted = adapt_flowertune_row(domain, row, index, dataset_name)
+        adapted = adapt_flowertune_row(
+            domain, row, index, dataset_name, data_version=data_version
+        )
         if adapted is not None:
             yield adapted
 
@@ -380,3 +488,67 @@ def audit_examples(examples: Sequence[CanonicalExample]) -> dict[str, Any]:
         "cell_counts": dict(sorted(cell_counts.items())),
         "native_target_counts": dict(label_counts.most_common(20)),
     }
+
+
+def audit_known_native_boilerplate(
+    examples: Sequence[CanonicalExample],
+) -> dict[str, dict[str, int | float]]:
+    """Count verified native-task text that survives in controlled examples."""
+
+    patterns = {
+        Domain.FINANCE.value: {
+            "native_instruction_fragment": FINANCE_INSTRUCTION_FRAGMENT_RE,
+            "label_vocabulary": FINANCE_LABEL_RE,
+        },
+        Domain.MEDICAL.value: {
+            "native_instruction_fragment": MEDICAL_INSTRUCTION_RE,
+        },
+    }
+    totals: Counter[str] = Counter()
+    matches: Counter[str] = Counter()
+    for example in examples:
+        if example.domain not in patterns:
+            continue
+        for scope in ("prompt", "target"):
+            prefix = f"{example.split}/{example.domain}/{example.task}/{scope}"
+            totals[prefix] += 1
+            value = getattr(example, scope)
+            for name, pattern in patterns[example.domain].items():
+                if pattern.search(value):
+                    matches[f"{prefix}/{name}"] += 1
+    result: dict[str, dict[str, int | float]] = {}
+    for key, matched in sorted(matches.items()):
+        prefix = key.rsplit("/", 1)[0]
+        total = totals[prefix]
+        result[key] = {
+            "matched_examples": matched,
+            "total_examples": total,
+            "matched_fraction": matched / total,
+        }
+    return result
+
+
+def audit_split_anchor(
+    examples: Sequence[CanonicalExample],
+    split_anchor: Mapping[str, Mapping[str, Sequence[int]]],
+) -> dict[str, dict[str, dict[str, int | float]]]:
+    """Report source-row retention against a previous split anchor."""
+
+    selected: dict[str, dict[str, set[int]]] = defaultdict(lambda: defaultdict(set))
+    for example in examples:
+        selected[example.domain][example.split].add(int(example.metadata["row_index"]))
+    report: dict[str, dict[str, dict[str, int | float]]] = {}
+    for domain, domain_splits in sorted(split_anchor.items()):
+        report[domain] = {}
+        for split, anchored_rows in sorted(domain_splits.items()):
+            anchored = set(int(value) for value in anchored_rows)
+            actual = selected[domain][split]
+            kept = len(anchored.intersection(actual))
+            report[domain][split] = {
+                "anchored_rows": len(anchored),
+                "kept_rows": kept,
+                "replacements": len(actual.difference(anchored)),
+                "dropped_ineligible_rows": len(anchored.difference(actual)),
+                "retention_fraction": kept / max(len(anchored), 1),
+            }
+    return report

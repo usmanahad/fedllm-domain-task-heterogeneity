@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections import defaultdict
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -14,12 +15,14 @@ from .aggregation import add_residuals, make_aggregator
 from .config import ExperimentConfig
 from .diagnostics import geometry_report
 from .lora import effective_lora_delta
+from .partitioning import example_pool_hash
 from .training import (
     build_model_and_tokenizer,
     evaluate_nll,
     get_adapter_state,
     set_adapter_state,
     set_cumulative_base_residual,
+    seed_everything,
     train_client,
     common_checkpoint_gradient,
 )
@@ -89,6 +92,7 @@ def run_federated(
         config = replace(config, model=replace(config.model, ffa_lora=True))
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    seed_everything(config.seed)
     model, tokenizer = build_model_and_tokenizer(config.model, device=device)
     global_state = get_adapter_state(model)
     cumulative_residual: dict[str, torch.Tensor] = {}
@@ -101,8 +105,18 @@ def run_federated(
         rank=config.model.lora_rank,
     )
     logs: list[dict[str, object]] = []
+    run_started = time.perf_counter()
 
     for round_id in range(1, config.rounds + 1):
+        round_started = time.perf_counter()
+        timing = {
+            "true_gradients": 0.0,
+            "client_training": 0.0,
+            "pre_aggregation_transfer": 0.0,
+            "aggregation": 0.0,
+            "post_aggregation_diagnostics": 0.0,
+            "validation": 0.0,
+        }
         client_updates = []
         global_effective = effective_lora_delta(global_state, config.model.scaling)
         local_effective_updates = []
@@ -117,6 +131,7 @@ def run_federated(
                 probe = sorted(client_examples, key=lambda item: item.example_id)[
                     : config.gradient_probe_examples_per_client
                 ]
+                gradient_started = time.perf_counter()
                 true_gradients.append(
                     common_checkpoint_gradient(
                         model,
@@ -127,10 +142,12 @@ def run_federated(
                         microbatch_size=config.train.eval_batch_size,
                     )
                 )
+                timing["true_gradients"] += time.perf_counter() - gradient_started
             client_train_config = replace(
                 config.train,
                 seed=config.seed + (10_000 * round_id) + position,
             )
+            training_started = time.perf_counter()
             result = train_client(
                 model,
                 tokenizer,
@@ -141,6 +158,7 @@ def run_federated(
                 config.model,
                 client_train_config,
             )
+            timing["client_training"] += time.perf_counter() - training_started
             client_updates.append(result.update)
             local_effective_updates.append(
                 {
@@ -151,6 +169,7 @@ def run_federated(
 
         diagnostic_payload: dict[str, object] = {}
         if diagnostic_round:
+            transfer_started = time.perf_counter()
             probe_cells = {
                 cell: sorted(values, key=lambda item: item.example_id)[
                     : config.probe_examples_per_cell
@@ -200,9 +219,13 @@ def run_federated(
                     "baseline_nll": baseline_probe,
                 },
             }
+            timing["pre_aggregation_transfer"] = (
+                time.perf_counter() - transfer_started
+            )
 
         previous_global_state = global_state
         previous_cumulative_residual = dict(cumulative_residual)
+        aggregation_started = time.perf_counter()
         aggregation = aggregator.aggregate(previous_global_state, client_updates)
         global_state = dict(aggregation.adapter_state)
         if aggregation.base_residual:
@@ -213,9 +236,11 @@ def run_federated(
                 model, cumulative_residual, applied_residual
             )
         set_adapter_state(model, global_state)
+        timing["aggregation"] = time.perf_counter() - aggregation_started
 
         weights = [float(update.num_examples) for update in client_updates]
         if diagnostic_round:
+            post_diagnostic_started = time.perf_counter()
             normalized = [weight / sum(weights) for weight in weights]
             aggregate_probe_nll = {
                 cell: evaluate_nll(
@@ -294,6 +319,10 @@ def run_federated(
                     },
                     output_dir / f"client-adapters-round-{round_id:03d}.pt",
                 )
+            timing["post_aggregation_diagnostics"] = (
+                time.perf_counter() - post_diagnostic_started
+            )
+        validation_started = time.perf_counter()
         cell_nll = {
             cell: evaluate_nll(
                 model,
@@ -305,6 +334,8 @@ def run_federated(
             )
             for cell, values in sorted(cells.items())
         }
+        timing["validation"] = time.perf_counter() - validation_started
+        timing["total"] = time.perf_counter() - round_started
         logs.append(
             {
                 "round": round_id,
@@ -315,6 +346,7 @@ def run_federated(
                 "validation_nll": cell_nll,
                 "geometry": geometry_report(local_effective_updates, weights),
                 "aggregation_diagnostics": asdict(aggregation.diagnostics),
+                "elapsed_seconds": timing,
                 **diagnostic_payload,
             }
         )
@@ -334,6 +366,9 @@ def run_federated(
         )
     summary = {
         "experiment": config.name,
+        "data_version": config.data_version,
+        "model_id": config.model.model_id,
+        "model_revision": config.model.revision,
         "seed": config.seed,
         "regime": partitions.regime,
         "aggregation": aggregation_method,
@@ -343,7 +378,17 @@ def run_federated(
         "client_cell_weights": partitions.cell_weights,
         "example_pool_hash": partitions.example_pool_hash,
         "final_validation_nll": logs[-1]["validation_nll"],
+        "elapsed_seconds": {
+            "total": time.perf_counter() - run_started,
+            "rounds": [item["elapsed_seconds"] for item in logs],
+        },
         "artifacts": artifacts,
+        "reproducibility": {
+            "optimization_seed": config.seed,
+            "client_rng_reset": True,
+            "cudnn_deterministic": True,
+            "cudnn_benchmark": False,
+        },
     }
     if "leave_one_out_aggregation" in logs[-1]:
         summary["final_leave_one_out_aggregation"] = logs[-1][
@@ -371,6 +416,8 @@ def run_reference(
         raise ValueError("local_only requires a partition specification")
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    run_started = time.perf_counter()
+    seed_everything(config.seed)
     model, tokenizer = build_model_and_tokenizer(config.model, device=device)
     initial = get_adapter_state(model)
     cells = _cell_groups(examples)
@@ -448,7 +495,14 @@ def run_reference(
         }
 
     result["experiment"] = config.name
+    result["data_version"] = config.data_version
+    result["model_id"] = config.model.model_id
+    result["model_revision"] = config.model.revision
+    result["example_pool_hash"] = example_pool_hash(
+        item for item in examples if item.split == "train"
+    )
     result["seed"] = config.seed
+    result["elapsed_seconds"] = time.perf_counter() - run_started
     (output_dir / "summary.json").write_text(
         json.dumps(result, indent=2, sort_keys=True) + "\n"
     )

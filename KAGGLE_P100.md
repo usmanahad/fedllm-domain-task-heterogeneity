@@ -1,242 +1,171 @@
-# Run this project on a Kaggle Tesla P100
+# Locked Kaggle P100 pilot
 
-The commands below target one 16 GiB Tesla P100. The recommended execution
-path is `run-local`: it simulates the 16 clients sequentially on one GPU and
-therefore does not keep multiple copies of the language model in VRAM.
+This is the next experiment after the CPU-only audit. It runs one optimization
+seed (`42`), two partition regimes (`iid`, `domain_only`), and two LoRA
+aggregation methods (`factor_fedavg`, `fedex_lora`): four federated runs total.
+It also evaluates the pretrained base once and trains one centralized reference.
 
-## 0. Create the notebook
+The public repository contains the code and frozen data-selection anchor. The
+upload-only `kaggle-p100-runner.ipynb` stays local and is intentionally excluded
+from Git.
 
-1. Upload the local `kaggle-p100-runner.ipynb` file as a Kaggle Notebook, or
-   create a blank notebook and use the cells below.
-2. In **Notebook options**, select **Accelerator: GPU P100**.
-3. Turn **Internet on**. It is required for GitHub, pip, and Hugging Face.
-4. Start with a fresh session and run the following cells in order.
+## What each arm tests
 
-## 1. Clone the public repository into the writable directory
+- **IID:** every one of the 16 clients receives the same balanced mixture of all
+  four domains and both open-vocabulary tasks.
+- **Domain-only:** four clients receive only general-language sources, four only
+  finance, four only medicine, and four only code. Every client still mixes both
+  tasks. The data pool and number of examples are identical to IID.
+- **Factor FedAvg:** independently averages the trainable LoRA `A` and `B`
+  factors. This is common practice, but is not the exact average of the induced
+  weight updates `BA`.
+- **FedEx-LoRA:** preserves the exact weighted average of the induced LoRA
+  updates through a residual. It is the aggregation-correctness control, not an
+  assumption that it must perform better.
 
-```python
-%cd /kaggle/working
-!git clone https://github.com/usmanahad/fedllm-domain-task-heterogeneity.git Fred
-%cd /kaggle/working/Fred
-```
+This pilot is a performance screen. Expensive gradient, transfer-matrix, and
+leave-one-client-out diagnostics are disabled. They will be timed on a selected
+follow-up run only if the pilot justifies them.
 
-## 2. Replace Kaggle's incompatible CUDA 12.8 PyTorch wheel
+## P100-safe setup
 
-Run this cell before importing PyTorch. It deliberately restarts the Python
-kernel when installation finishes; wait for Kaggle to reconnect before running
-the next cell.
+1. Upload `kaggle-p100-runner.ipynb` as a Kaggle Notebook.
+2. Select **GPU P100** and turn **Internet on**.
+3. Start a fresh session and choose **Run all**.
 
-```python
-%cd /kaggle/working/Fred
-!python -m pip uninstall -y torch torchvision torchaudio torchtext
-!python -m pip install --no-cache-dir --force-reinstall \
-    torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
-    --index-url https://download.pytorch.org/whl/cu121
+The notebook performs the following operations in order:
 
-import os
-os._exit(0)
-```
+1. Clones or fast-forwards
+   `https://github.com/usmanahad/fedllm-domain-task-heterogeneity.git`.
+2. Replaces Kaggle's incompatible CUDA 12.8 PyTorch packages with PyTorch
+   2.5.1 CUDA 12.1, whose wheel supports the P100's Pascal architecture.
+3. Installs `requirements-kaggle-p100.txt` and the project without resolving
+   additional dependencies.
+4. Runs the CUDA fp16 preflight, the CPU test suite, the LoRA algebra test, and
+   an optional tiny end-to-end smoke run.
+5. Builds and strictly audits the clean-v2 controlled pool and both partitions.
+6. Runs the two references and four federated arms sequentially on one GPU.
+7. Creates one compact ZIP per federated arm in
+   `/kaggle/working/fedllm-result-zips`.
 
-The CUDA 12.1 wheel is intentional. It includes `sm_60` kernels for the Pascal
-P100, whereas the current Kaggle CUDA 12.8 PyTorch image does not.
+Do not use bf16 or FlashAttention 2 on a P100. The pilot uses
+Qwen2.5-0.5B-Instruct, fp16, batch size 2, sequence length 512, and sequential
+clients so only one model is resident on the 16 GiB GPU. If the smoke test runs
+out of memory, set both training and evaluation batch sizes to 1 in a copy of
+the config; apply the same change to all four arms.
 
-## 3. Install the pinned research environment
+## Exact manual commands
 
-```python
-%cd /kaggle/working/Fred
-!python -m pip install --no-cache-dir -r requirements-kaggle-p100.txt
-!python -m pip install --no-deps -e .
-```
+The notebook is the recommended path. These commands reproduce its scientific
+steps after the pinned environment has been installed:
 
-Do not replace these commands with `pip install -e '.[train,flower,eval]'` on a
-P100: the loose extras can upgrade the deliberately pinned PyTorch and
-Transformers versions.
+```bash
+cd /kaggle/working/Fred
+export HF_HOME=/kaggle/working/hf-cache
+export TOKENIZERS_PARALLELISM=false
+export WANDB_DISABLED=true
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
-## 4. Verify that a real P100 kernel runs
-
-```python
-%cd /kaggle/working/Fred
-!nvidia-smi
-!python scripts/kaggle_p100_preflight.py
-!pytest
-!fedllm-heterogeneity lora-demo --seed 42
-```
-
-The preflight must end in both `CUDA fp16 forward/backward: PASS` and `P100
-preflight: PASS`. Merely seeing `torch.cuda.is_available() == True` is not
-sufficient.
-
-## 5. Run the small end-to-end smoke test
-
-```python
-%cd /kaggle/working/Fred
-%env HF_HOME=/kaggle/working/hf-cache
-%env TOKENIZERS_PARALLELISM=false
-%env WANDB_DISABLED=true
-%env PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-
-!CONFIG=configs/smoke_p100.yaml \
-  EXAMPLES=artifacts/smoke_examples.jsonl \
-  CLIENTS=8 \
-  PARTITIONS_ROOT=artifacts/smoke-partitions \
-  OUTPUT_ROOT=artifacts/smoke-runs \
-  bash scripts/kaggle_run_primary.sh 42 coupled fedex_lora
-```
-
-This downloads the four FlowerTune datasets and Qwen model, creates the eight
-domain-task cells, audits the partition, trains one step for each of eight
-clients, evaluates the cells, and writes:
-
-```text
-/kaggle/working/Fred/artifacts/smoke-runs/seed-42/coupled/fedex_lora/summary.json
-```
-
-Do not start the full experiment until this cell succeeds.
-
-## 6. Build the full fixed example pool and all four partitions
-
-Run once. All experimental runs reuse these exact files.
-
-```python
-%cd /kaggle/working/Fred
-!fedllm-heterogeneity build-data \
-  --config configs/controlled_qwen_p100.yaml \
-  --output artifacts/controlled_examples.jsonl \
+fedllm-heterogeneity build-data \
+  --config configs/controlled_qwen_p100_clean_v2.yaml \
+  --output artifacts/controlled_examples_clean_v2.jsonl \
   --cache-dir /kaggle/working/hf-cache/datasets
 
-!fedllm-heterogeneity build-partitions --examples artifacts/controlled_examples.jsonl --regime iid         --clients 16 --seed 42 --output artifacts/partitions-iid.json
-!fedllm-heterogeneity build-partitions --examples artifacts/controlled_examples.jsonl --regime domain_only --clients 16 --seed 42 --output artifacts/partitions-domain_only.json
-!fedllm-heterogeneity build-partitions --examples artifacts/controlled_examples.jsonl --regime task_only   --clients 16 --seed 42 --output artifacts/partitions-task_only.json
-!fedllm-heterogeneity build-partitions --examples artifacts/controlled_examples.jsonl --regime coupled     --clients 16 --seed 42 --output artifacts/partitions-coupled.json
+for regime in iid domain_only; do
+  fedllm-heterogeneity build-partitions \
+    --examples artifacts/controlled_examples_clean_v2.jsonl \
+    --regime "$regime" \
+    --clients 16 \
+    --seed 42 \
+    --output "artifacts/partitions-clean-v2-pseed-42-${regime}.json"
 
-!fedllm-heterogeneity audit \
-  --examples artifacts/controlled_examples.jsonl \
-  --partitions artifacts/partitions-coupled.json
+  fedllm-heterogeneity audit \
+    --examples artifacts/controlled_examples_clean_v2.jsonl \
+    --partitions "artifacts/partitions-clean-v2-pseed-42-${regime}.json" \
+    --expected-regime "$regime" \
+    --expected-partition-seed 42 \
+    --expected-examples-sha256 \
+      ab07a92891d0ccaeaa0a77ed570f5fbcf6c31395e3c1c5b79185e102b30d6418 \
+    --strict
+done
 ```
 
-## 7. Run the FedEx matrix
+Run the references once:
 
-The local upload-only runner executes three seeds (`42`, `43`, `44`) for IID,
-domain-only, task-only, and coupled partitions: 12 FedEx runs total. At round 8
-it records the full aggregate and all 16 leave-one-client-out aggregates on
-each domain-task probe cell. Each completed run is immediately packaged as:
+```bash
+COMMON_ROOT=artifacts/runs/clean-v2/partition-seed-42/seed-42
+
+fedllm-heterogeneity run-reference \
+  --config configs/controlled_qwen_p100_clean_v2.yaml \
+  --examples artifacts/controlled_examples_clean_v2.jsonl \
+  --arm base --seed 42 --device cuda \
+  --output "${COMMON_ROOT}/base"
+
+fedllm-heterogeneity run-reference \
+  --config configs/controlled_qwen_p100_clean_v2.yaml \
+  --examples artifacts/controlled_examples_clean_v2.jsonl \
+  --arm centralized --seed 42 --device cuda \
+  --output "${COMMON_ROOT}/centralized"
+```
+
+Run the four federated arms, one after another:
+
+```bash
+for regime in iid domain_only; do
+  for aggregation in factor_fedavg fedex_lora; do
+    CONFIG=configs/controlled_qwen_p100_clean_v2.yaml \
+    EXAMPLES=artifacts/controlled_examples_clean_v2.jsonl \
+    DATA_TAG=clean-v2 \
+    PARTITION_SEED=42 \
+    EXPECTED_EXAMPLES_SHA256=ab07a92891d0ccaeaa0a77ed570f5fbcf6c31395e3c1c5b79185e102b30d6418 \
+    bash scripts/kaggle_run_primary.sh 42 "$regime" "$aggregation"
+  done
+done
+```
+
+Expected output directories are:
 
 ```text
-/kaggle/working/fedllm-result-zips/seed-<seed>__<regime>__fedex_lora.zip
+artifacts/runs/clean-v2/partition-seed-42/seed-42/iid/factor_fedavg/
+artifacts/runs/clean-v2/partition-seed-42/seed-42/iid/fedex_lora/
+artifacts/runs/clean-v2/partition-seed-42/seed-42/domain_only/factor_fedavg/
+artifacts/runs/clean-v2/partition-seed-42/seed-42/domain_only/fedex_lora/
 ```
 
-The completion check requires the final leave-one-out result, so an older
-coupled run without that diagnostic is rerun automatically. Completed matrix
-runs are skipped unless `FORCE_RERUN = True` in the notebook.
+## Data-integrity gate
 
-To launch an individual run manually, use one sequential job at a time. The
-three arguments are training seed, partition regime, and aggregation method.
+The clean-v2 config pins all four Hugging Face dataset revisions and uses
+`configs/controlled_source_splits_v1.json` as the source-row anchor. The locally
+verified pool has:
 
-```python
-%cd /kaggle/working/Fred
-!bash scripts/kaggle_run_primary.sh 42 coupled fedex_lora
-```
+- 7,168 task examples derived from 3,584 unique sources;
+- exactly 512 train, 128 validation, and 256 test examples per domain-task cell;
+- no source overlap across splits and no duplicate example IDs;
+- no known FlowerTune finance or medical instruction boilerplate in prompts or
+  targets;
+- SHA-256 `ab07a92891d0ccaeaa0a77ed570f5fbcf6c31395e3c1c5b79185e102b30d6418`.
 
-Other registered arms use the same command form:
+General and code preserve 100% of anchored sources. Medical preserves about
+94%, while finance preserves about 40% because removing its long fixed
+sentiment instruction makes many statements shorter than the locked 32-token
+minimum. Replacements are deterministic and source-local; the same clean pool
+is used for IID and domain-only.
 
-```python
-!bash scripts/kaggle_run_primary.sh 42 iid fedex_lora
-!bash scripts/kaggle_run_primary.sh 42 domain_only fedex_lora
-!bash scripts/kaggle_run_primary.sh 42 task_only fedex_lora
-!bash scripts/kaggle_run_primary.sh 42 coupled factor_fedavg
-!bash scripts/kaggle_run_primary.sh 42 coupled ffa_lora
-!bash scripts/kaggle_run_primary.sh 42 coupled svd_effective
-```
+The Kaggle manifest hash must match the value above. Stop rather than train if
+it does not.
 
-Repeat with seeds `43` and `44`. Keep the data and partition files fixed; only
-the training seed changes. Generate the full command list with:
+## Downloads and recovery
 
-```python
-!python scripts/print_run_matrix.py \
-  --config configs/controlled_qwen_p100.yaml \
-  --seeds 42 43 44 \
-  --output-root artifacts/runs
-```
+Each ZIP contains JSON measurements, tables, the selected data manifest, pinned
+configs, split anchor, dependency pins, reference summaries, and Git revision.
+Large adapters, FedEx residual tensors, generated datasets, and partitions are
+excluded from the ZIP. The run directories retain final checkpoints because
+they may be needed for native evaluation; save `/kaggle/working/Fred/artifacts`
+as a private Kaggle Dataset before the session expires if those checkpoints
+matter.
 
-The printed commands are a preregistered matrix, not a recommendation to run
-all jobs in a single Kaggle session. Save `/kaggle/working/Fred/artifacts` as a
-Kaggle output Dataset between sessions.
-
-## 8. Reference arms and final analysis
-
-```python
-%cd /kaggle/working/Fred
-!fedllm-heterogeneity run-reference \
-  --config configs/controlled_qwen_p100.yaml \
-  --examples artifacts/controlled_examples.jsonl \
-  --arm base --seed 42 --device cuda \
-  --output artifacts/runs/seed-42/base
-
-!fedllm-heterogeneity run-reference \
-  --config configs/controlled_qwen_p100.yaml \
-  --examples artifacts/controlled_examples.jsonl \
-  --arm centralized --seed 42 --device cuda \
-  --output artifacts/runs/seed-42/centralized
-
-!fedllm-heterogeneity run-reference \
-  --config configs/controlled_qwen_p100.yaml \
-  --examples artifacts/controlled_examples.jsonl \
-  --partitions artifacts/partitions-coupled.json \
-  --arm local_only --seed 42 --device cuda \
-  --output artifacts/runs/seed-42/local-only
-
-!fedllm-heterogeneity analyze \
-  --runs artifacts/runs \
-  --output artifacts/analysis.json
-```
-
-Repeat the three reference commands for seeds 43 and 44 before treating the
-confidence intervals as final.
-
-## 9. Create a small download archive
-
-Do not zip the whole `artifacts` directory: `.pt` adapters and FedEx base
-residuals are large. Package only the JSON measurements, tabular evaluations,
-manifests, configs, dependency pins, and Git revision with maximum ZIP
-compression:
-
-```python
-%cd /kaggle/working/Fred
-!python scripts/package_results.py \
-  --project /kaggle/working/Fred \
-  --artifacts /kaggle/working/Fred/artifacts \
-  --output /kaggle/working/fedllm-results.zip
-```
-
-The upload-only runner already creates the 12 separate archives. The command
-above is only for manually packaging all available results together. Adapter
-checkpoints (`*.pt`), effective-weight residuals, generated datasets/partitions,
-and smoke artifacts are excluded. The P100 configuration also disables writing
-new checkpoints, so only the compact JSON measurements are retained.
-
-## Optional: Flower/Ray execution
-
-The sequential runner above is scientifically equivalent for full client
-participation and is safer on one P100. To exercise the Flower application
-itself, install its separate pins and allow only one GPU client at a time:
-
-```python
-%cd /kaggle/working/Fred
-!python -m pip install --no-cache-dir -r requirements-kaggle-p100-flower.txt
-!flwr run --run-config \
-  "experiment-config='configs/controlled_qwen_p100.yaml' examples='artifacts/controlled_examples.jsonl' partitions='artifacts/partitions-coupled.json' aggregation='fedex_lora' output='artifacts/flower-run' seed=42"
-```
-
-Do not set a fractional `num-gpus` value for this project on the P100: each
-client constructs a model, and concurrent clients can exhaust 16 GiB VRAM.
-
-## P100 operating constraints
-
-- Use fp16, not bf16. The supplied configs and 4-bit compute path use fp16.
-- Do not enable FlashAttention 2; the P100 is Pascal, not Ampere.
-- Start with Qwen2.5-0.5B and `batch_size: 2`, `eval_batch_size: 2`, sequence
-  length 512. The 1.5B QLoRA file is a later scale check, not the first run.
-- If memory is still exhausted, set both batch sizes to 1. Do not change local
-  steps or sequence length in only one experimental regime.
-- `/kaggle/input` is read-only. All artifacts and Hugging Face caches must stay
-  below `/kaggle/working`.
+If a session stops, rerun the notebook after attaching or restoring the
+artifacts. It skips an arm only when `summary.json` exists and `rounds.json`
+contains all eight rounds. Set `FORCE_RERUN = True` only when an intentional
+full rerun is required.

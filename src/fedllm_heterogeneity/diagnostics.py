@@ -156,6 +156,12 @@ def token_js_divergence(left: Counter[int], right: Counter[int]) -> float:
 
 
 def shared_token_mass(left: Counter[int], right: Counter[int]) -> float:
+    """Mass carried by tokens that occur at least once in both samples.
+
+    This support-based diagnostic is retained for compatibility with the
+    original data manifest.  For distributional similarity, prefer
+    :func:`weighted_token_overlap`, which also accounts for frequency mismatch.
+    """
     if not left or not right:
         return 0.0
     shared = set(left).intersection(right)
@@ -163,3 +169,99 @@ def shared_token_mass(left: Counter[int], right: Counter[int]) -> float:
     right_mass = sum(right[token] for token in shared) / sum(right.values())
     return float((left_mass + right_mass) / 2)
 
+
+def weighted_token_overlap(left: Counter[int], right: Counter[int]) -> float:
+    """Overlap coefficient between normalized token-frequency distributions.
+
+    The result is ``sum_t min(p_left(t), p_right(t))`` and equals ``1 - TV``.
+    It is one only for identical distributions and zero for disjoint support.
+    """
+
+    if not left or not right:
+        return 0.0
+    left_total = float(sum(left.values()))
+    right_total = float(sum(right.values()))
+    return float(
+        sum(
+            min(left[token] / left_total, right[token] / right_total)
+            for token in set(left).union(right)
+        )
+    )
+
+
+def vocabulary_jaccard(left: Counter[int], right: Counter[int]) -> float:
+    """Jaccard similarity of the observed token vocabularies."""
+
+    union = set(left).union(right)
+    if not union:
+        return 1.0
+    return float(len(set(left).intersection(right)) / len(union))
+
+
+def ubiquitous_token_mass(distributions: Mapping[str, Counter[int]]) -> float:
+    """Mean probability mass on tokens observed in every supplied group."""
+
+    nonempty = {key: value for key, value in distributions.items() if value}
+    if not nonempty:
+        return 0.0
+    shared = set.intersection(*(set(value) for value in nonempty.values()))
+    return float(
+        np.mean(
+            [
+                sum(counter[token] for token in shared) / sum(counter.values())
+                for counter in nonempty.values()
+            ]
+        )
+    )
+
+
+def token_label_mutual_information(
+    distributions: Mapping[str, Counter[int]],
+) -> tuple[float, dict[int, float]]:
+    """Mutual information in bits between a token and an equal-prior label.
+
+    Each group's token distribution is normalized independently and labels are
+    assigned a uniform prior.  This prevents longer-domain examples from
+    receiving a larger prior merely because they contain more tokens.  The
+    second return value gives each token's signed contribution to total MI.
+    """
+
+    nonempty = {key: value for key, value in distributions.items() if value}
+    if len(nonempty) < 2:
+        return 0.0, {}
+    labels = sorted(nonempty)
+    prior = 1.0 / len(labels)
+    conditional = {
+        label: {token: count / sum(nonempty[label].values()) for token, count in nonempty[label].items()}
+        for label in labels
+    }
+    marginal: Counter[int] = Counter()
+    for label in labels:
+        for token, probability in conditional[label].items():
+            marginal[token] += prior * probability
+    contributions: dict[int, float] = {}
+    for token, token_probability in marginal.items():
+        contribution = 0.0
+        for label in labels:
+            probability = conditional[label].get(token, 0.0)
+            if probability > 0:
+                joint = prior * probability
+                contribution += joint * np.log2(probability / token_probability)
+        contributions[token] = float(contribution)
+    return float(sum(contributions.values())), contributions
+
+
+def linear_cka(left: np.ndarray, right: np.ndarray) -> float:
+    """Linear centered-kernel alignment for two activation matrices."""
+
+    left = np.asarray(left, dtype=np.float64)
+    right = np.asarray(right, dtype=np.float64)
+    if left.ndim != 2 or right.ndim != 2 or left.shape[0] != right.shape[0]:
+        raise ValueError("Activation matrices must be 2-D with equal row counts")
+    left = left - left.mean(axis=0, keepdims=True)
+    right = right - right.mean(axis=0, keepdims=True)
+    cross = np.linalg.norm(left.T @ right, ord="fro") ** 2
+    denominator = np.linalg.norm(left.T @ left, ord="fro") * np.linalg.norm(
+        right.T @ right, ord="fro"
+    )
+    return 0.0 if denominator == 0 else float(cross / denominator)

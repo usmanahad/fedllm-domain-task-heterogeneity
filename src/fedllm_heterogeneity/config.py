@@ -34,6 +34,8 @@ class ExperimentConfig:
     gradient_probe_examples_per_client: int = 2
     leave_one_out_rounds: tuple[int, ...] = (8,)
     save_checkpoints: bool = True
+    data_version: str = "legacy_v1"
+    split_anchor: str | None = None
 
 
 def _require(mapping: Mapping[str, Any], key: str) -> Any:
@@ -62,6 +64,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
     )
     model_config = ModelConfig(
         model_id=str(model.get("id", "Qwen/Qwen2.5-0.5B-Instruct")),
+        revision=model.get("revision"),
         quantization_bits=model.get("quantization_bits"),
         lora_rank=int(model.get("lora_rank", 16)),
         lora_alpha=int(model.get("lora_alpha", 32)),
@@ -83,6 +86,9 @@ def load_config(path: str | Path) -> ExperimentConfig:
     track = str(_require(raw, "track"))
     if track not in {"controlled", "natural"}:
         raise ValueError("track must be 'controlled' or 'natural'")
+    data_version = str(data.get("version", "legacy_v1"))
+    if data_version not in {"legacy_v1", "clean_v2"}:
+        raise ValueError("data.version must be 'legacy_v1' or 'clean_v2'")
     return ExperimentConfig(
         name=str(raw.get("name", Path(path).stem)),
         track=track,
@@ -109,4 +115,6 @@ def load_config(path: str | Path) -> ExperimentConfig:
             for value in analysis.get("leave_one_out_rounds", [int(raw.get("rounds", 8))])
         ),
         save_checkpoints=bool(raw.get("save_checkpoints", True)),
+        data_version=data_version,
+        split_anchor=data.get("split_anchor"),
     )

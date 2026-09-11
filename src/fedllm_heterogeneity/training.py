@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Iterable, Mapping, Sequence
 
 import torch
+import numpy as np
 from torch.utils.data import DataLoader, Dataset
 
 from .lora import TensorState, apply_base_residual, effective_lora_delta
@@ -18,6 +19,7 @@ from .types import CanonicalExample, ClientUpdate
 @dataclass(frozen=True)
 class ModelConfig:
     model_id: str = "Qwen/Qwen2.5-0.5B-Instruct"
+    revision: str | None = None
     quantization_bits: int | None = None
     lora_rank: int = 16
     lora_alpha: int = 32
@@ -49,6 +51,19 @@ class TrainResult:
     mean_loss: float
 
 
+def seed_everything(seed: int) -> None:
+    """Seed model initialization, data order, and dropout reproducibly."""
+
+    random.seed(seed)
+    np.random.seed(seed % (2**32))
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    if torch.backends.cudnn.is_available():
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+
+
 def require_hf() -> tuple[object, object, object, object, object]:
     try:
         from peft import (
@@ -72,7 +87,9 @@ def require_hf() -> tuple[object, object, object, object, object]:
 def build_model_and_tokenizer(config: ModelConfig, device: str | None = None):
     hf, LoraConfig, get_peft_model, _, _ = require_hf()
     AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig = hf
-    tokenizer = AutoTokenizer.from_pretrained(config.model_id)
+    tokenizer = AutoTokenizer.from_pretrained(
+        config.model_id, revision=config.revision
+    )
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
@@ -89,12 +106,16 @@ def build_model_and_tokenizer(config: ModelConfig, device: str | None = None):
     if config.random_init:
         from transformers import AutoConfig
 
-        base_config = AutoConfig.from_pretrained(config.model_id)
+        base_config = AutoConfig.from_pretrained(
+            config.model_id, revision=config.revision
+        )
         base = AutoModelForCausalLM.from_config(base_config)
         if device:
             base.to(device)
     else:
-        base = AutoModelForCausalLM.from_pretrained(config.model_id, **load_kwargs)
+        base = AutoModelForCausalLM.from_pretrained(
+            config.model_id, revision=config.revision, **load_kwargs
+        )
     lora_config = LoraConfig(
         r=config.lora_rank,
         lora_alpha=config.lora_alpha,
@@ -197,9 +218,13 @@ def train_client(
 ) -> TrainResult:
     if not examples:
         raise ValueError(f"Client {client_id} has no training examples")
+    local_seed = train_config.seed + round_id
+    # Reset stochastic layers per client so adding a diagnostic evaluation does
+    # not silently change subsequent training randomness.
+    seed_everything(local_seed)
     set_adapter_state(model, global_adapter)
     model.train()
-    generator = torch.Generator().manual_seed(train_config.seed + round_id)
+    generator = torch.Generator().manual_seed(local_seed)
     dataset = TokenizedExamples(examples, tokenizer, train_config.max_length)
     loader = DataLoader(
         dataset,

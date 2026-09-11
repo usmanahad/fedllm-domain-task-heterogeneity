@@ -1,0 +1,247 @@
+{
+  "audit": {
+    "cell_counts": {
+      "test/code/continuation": 256,
+      "test/code/span_reconstruction": 256,
+      "test/finance/continuation": 256,
+      "test/finance/span_reconstruction": 256,
+      "test/general/continuation": 256,
+      "test/general/span_reconstruction": 256,
+      "test/medical/continuation": 256,
+      "test/medical/span_reconstruction": 256,
+      "train/code/continuation": 512,
+      "train/code/span_reconstruction": 512,
+      "train/finance/continuation": 512,
+      "train/finance/span_reconstruction": 512,
+      "train/general/continuation": 512,
+      "train/general/span_reconstruction": 512,
+      "train/medical/continuation": 512,
+      "train/medical/span_reconstruction": 512,
+      "validation/code/continuation": 128,
+      "validation/code/span_reconstruction": 128,
+      "validation/finance/continuation": 128,
+      "validation/finance/span_reconstruction": 128,
+      "validation/general/continuation": 128,
+      "validation/general/span_reconstruction": 128,
+      "validation/medical/continuation": 128,
+      "validation/medical/span_reconstruction": 128
+    },
+    "duplicate_example_ids": 0,
+    "native_target_counts": {},
+    "num_examples": 7168,
+    "num_unique_examples": 7168,
+    "num_unique_sources": 3584,
+    "source_overlap_across_splits": {
+      "test:train": 0,
+      "test:validation": 0,
+      "train:validation": 0
+    }
+  },
+  "canonical_examples_sha256": "ab07a92891d0ccaeaa0a77ed570f5fbcf6c31395e3c1c5b79185e102b30d6418",
+  "counts": {
+    "test": 256,
+    "train": 512,
+    "validation": 128
+  },
+  "data_version": "clean_v2",
+  "datasets": {
+    "code": "flwrlabs/code-alpaca-20k",
+    "finance": "flwrlabs/fingpt-sentiment-train",
+    "general": "flwrlabs/alpaca-gpt4",
+    "medical": "flwrlabs/medical-meadow-medical-flashcards"
+  },
+  "known_native_boilerplate_audit": {
+    "test/finance/continuation/prompt/label_vocabulary": {
+      "matched_examples": 1,
+      "matched_fraction": 0.00390625,
+      "total_examples": 256
+    },
+    "test/finance/span_reconstruction/target/label_vocabulary": {
+      "matched_examples": 1,
+      "matched_fraction": 0.00390625,
+      "total_examples": 256
+    },
+    "train/finance/continuation/prompt/label_vocabulary": {
+      "matched_examples": 5,
+      "matched_fraction": 0.009765625,
+      "total_examples": 512
+    },
+    "train/finance/continuation/target/label_vocabulary": {
+      "matched_examples": 1,
+      "matched_fraction": 0.001953125,
+      "total_examples": 512
+    },
+    "train/finance/span_reconstruction/prompt/label_vocabulary": {
+      "matched_examples": 4,
+      "matched_fraction": 0.0078125,
+      "total_examples": 512
+    },
+    "train/finance/span_reconstruction/target/label_vocabulary": {
+      "matched_examples": 2,
+      "matched_fraction": 0.00390625,
+      "total_examples": 512
+    },
+    "validation/finance/continuation/prompt/label_vocabulary": {
+      "matched_examples": 3,
+      "matched_fraction": 0.0234375,
+      "total_examples": 128
+    },
+    "validation/finance/continuation/target/label_vocabulary": {
+      "matched_examples": 1,
+      "matched_fraction": 0.0078125,
+      "total_examples": 128
+    },
+    "validation/finance/span_reconstruction/prompt/label_vocabulary": {
+      "matched_examples": 3,
+      "matched_fraction": 0.0234375,
+      "total_examples": 128
+    },
+    "validation/finance/span_reconstruction/target/label_vocabulary": {
+      "matched_examples": 1,
+      "matched_fraction": 0.0078125,
+      "total_examples": 128
+    }
+  },
+  "model_revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+  "model_tokenizer": "Qwen/Qwen2.5-0.5B-Instruct",
+  "num_examples": 7168,
+  "revisions": {
+    "code": "993cf40c2e806a2641f388fb4026f30c4c73dc97",
+    "finance": "d01aba2a91252c687bc35e4da659ab73ac70ea27",
+    "general": "227200cb2c43468a7c44d5e15a47967b10f51aaf",
+    "medical": "bc33733afea65239aed2149aa79ea77742d28cc2"
+  },
+  "schema_version": 1,
+  "seed": 42,
+  "split_anchor_retention": {
+    "code": {
+      "test": {
+        "anchored_rows": 256,
+        "dropped_ineligible_rows": 0,
+        "kept_rows": 256,
+        "replacements": 0,
+        "retention_fraction": 1.0
+      },
+      "train": {
+        "anchored_rows": 512,
+        "dropped_ineligible_rows": 0,
+        "kept_rows": 512,
+        "replacements": 0,
+        "retention_fraction": 1.0
+      },
+      "validation": {
+        "anchored_rows": 128,
+        "dropped_ineligible_rows": 0,
+        "kept_rows": 128,
+        "replacements": 0,
+        "retention_fraction": 1.0
+      }
+    },
+    "finance": {
+      "test": {
+        "anchored_rows": 256,
+        "dropped_ineligible_rows": 162,
+        "kept_rows": 94,
+        "replacements": 162,
+        "retention_fraction": 0.3671875
+      },
+      "train": {
+        "anchored_rows": 512,
+        "dropped_ineligible_rows": 305,
+        "kept_rows": 207,
+        "replacements": 305,
+        "retention_fraction": 0.404296875
+      },
+      "validation": {
+        "anchored_rows": 128,
+        "dropped_ineligible_rows": 81,
+        "kept_rows": 47,
+        "replacements": 81,
+        "retention_fraction": 0.3671875
+      }
+    },
+    "general": {
+      "test": {
+        "anchored_rows": 256,
+        "dropped_ineligible_rows": 0,
+        "kept_rows": 256,
+        "replacements": 0,
+        "retention_fraction": 1.0
+      },
+      "train": {
+        "anchored_rows": 512,
+        "dropped_ineligible_rows": 0,
+        "kept_rows": 512,
+        "replacements": 0,
+        "retention_fraction": 1.0
+      },
+      "validation": {
+        "anchored_rows": 128,
+        "dropped_ineligible_rows": 0,
+        "kept_rows": 128,
+        "replacements": 0,
+        "retention_fraction": 1.0
+      }
+    },
+    "medical": {
+      "test": {
+        "anchored_rows": 256,
+        "dropped_ineligible_rows": 14,
+        "kept_rows": 242,
+        "replacements": 14,
+        "retention_fraction": 0.9453125
+      },
+      "train": {
+        "anchored_rows": 512,
+        "dropped_ineligible_rows": 30,
+        "kept_rows": 482,
+        "replacements": 30,
+        "retention_fraction": 0.94140625
+      },
+      "validation": {
+        "anchored_rows": 128,
+        "dropped_ineligible_rows": 9,
+        "kept_rows": 119,
+        "replacements": 9,
+        "retention_fraction": 0.9296875
+      }
+    }
+  },
+  "split_anchor_sha256": "32b1fd02141fafe895e432c94f7b6df90b19b826aae3e4277ae22a6f1629fcf0",
+  "token_statistics": {
+    "fertility_tokens_per_whitespace_word": {
+      "code": 1.721663508720789,
+      "finance": 1.6277485659655833,
+      "general": 1.3270844947041491,
+      "medical": 1.4203903291581708
+    },
+    "pairwise": {
+      "code:finance": {
+        "js_divergence": 0.453070348154787,
+        "shared_token_mass": 0.6594040802417752
+      },
+      "code:general": {
+        "js_divergence": 0.38700392478467666,
+        "shared_token_mass": 0.7786603476377065
+      },
+      "code:medical": {
+        "js_divergence": 0.5262018954796965,
+        "shared_token_mass": 0.6299488069278385
+      },
+      "finance:general": {
+        "js_divergence": 0.357185544841178,
+        "shared_token_mass": 0.7731095405776174
+      },
+      "finance:medical": {
+        "js_divergence": 0.4464339655561125,
+        "shared_token_mass": 0.6830917815295896
+      },
+      "general:medical": {
+        "js_divergence": 0.35090648255628376,
+        "shared_token_mass": 0.754813017523263
+      }
+    }
+  },
+  "track": "controlled",
+  "training_example_pool_hash": "d7c10649360a94bfa86554901d80ab3c17630465f38374922cec151f658f566f"
+}

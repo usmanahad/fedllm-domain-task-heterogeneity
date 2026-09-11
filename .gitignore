@@ -31,3 +31,9 @@ hf-cache/
 /Proposal-Non-IID-Federated-LLMs.pdf
 /GulzarPapers/
 /kaggle-p100-runner.ipynb
+
+# Downloaded/generated research outputs remain local. Compact frozen summaries
+# live in baseline/ instead.
+/fedllm-results/
+/fedllm-results-first/
+/tmp/

@@ -55,3 +55,52 @@ def test_results_archive_excludes_checkpoints_data_and_smoke(tmp_path):
     assert not any(name.endswith(".pt") for name in names)
     assert not any("controlled_examples" in name for name in names)
     assert not any("smoke" in name for name in names)
+
+
+def test_results_archive_uses_explicit_manifest_and_includes_split_anchor(tmp_path):
+    project = tmp_path / "project"
+    run = (
+        project
+        / "artifacts"
+        / "runs"
+        / "clean-v2"
+        / "seed-42"
+        / "iid"
+        / "fedex_lora"
+    )
+    run.mkdir(parents=True)
+    (run / "summary.json").write_text('{"ok": true}\n')
+    manifest = (
+        project / "artifacts" / "controlled_examples_clean_v2.jsonl.manifest.json"
+    )
+    manifest.write_text('{"sha256": "clean-v2"}\n')
+    configs = project / "configs"
+    configs.mkdir()
+    (configs / "controlled_source_splits_v1.json").write_text('{"version": 1}\n')
+    output = tmp_path / "results.zip"
+    script = Path(__file__).parents[1] / "scripts" / "package_results.py"
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--project",
+            str(project),
+            "--artifacts",
+            str(run),
+            "--data-manifest",
+            str(manifest),
+            "--output",
+            str(output),
+        ],
+        check=True,
+    )
+
+    with ZipFile(output) as archive:
+        assert archive.read("provenance/data-manifest.json") == (
+            b'{"sha256": "clean-v2"}\n'
+        )
+        assert (
+            "provenance/configs/controlled_source_splits_v1.json"
+            in archive.namelist()
+        )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from dataclasses import asdict
 from pathlib import Path
@@ -14,6 +15,8 @@ from .config import load_config
 from .analysis import analyze_runs, load_run_summaries
 from .data import (
     audit_examples,
+    audit_known_native_boilerplate,
+    audit_split_anchor,
     build_controlled_examples,
     build_native_examples,
     load_flowertune_sources,
@@ -34,10 +37,25 @@ def _json(value: object) -> None:
 def command_build_data(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     try:
+        from huggingface_hub import snapshot_download
         from transformers import AutoTokenizer
     except ImportError as exc:
         raise RuntimeError("Install training dependencies with pip install -e '.[train]'") from exc
-    tokenizer = AutoTokenizer.from_pretrained(config.model.model_id)
+    tokenizer_path = snapshot_download(
+        config.model.model_id,
+        revision=config.model.revision,
+        allow_patterns=[
+            "config.json",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "special_tokens_map.json",
+            "vocab.json",
+            "merges.txt",
+        ],
+    )
+    tokenizer = AutoTokenizer.from_pretrained(
+        tokenizer_path, local_files_only=True, fix_mistral_regex=False
+    )
     sources = {
         domain: list(
             load_flowertune_sources(
@@ -45,12 +63,28 @@ def command_build_data(args: argparse.Namespace) -> None:
                 dataset_name=dataset,
                 revision=config.revisions.get(domain),
                 cache_dir=args.cache_dir,
+                data_version=config.data_version if config.track == "controlled" else "legacy_v1",
             )
         )
         for domain, dataset in config.datasets.items()
     }
+    split_anchor = None
+    split_anchor_path = None
+    if config.track == "controlled" and config.split_anchor:
+        split_anchor_path = Path(config.split_anchor)
+        if not split_anchor_path.is_absolute():
+            direct = split_anchor_path.resolve()
+            relative_to_config = Path(args.config).resolve().parent / split_anchor_path
+            split_anchor_path = direct if direct.exists() else relative_to_config
+        split_anchor = json.loads(split_anchor_path.read_text())["splits"]
     if config.track == "controlled":
-        examples = build_controlled_examples(sources, tokenizer, config.counts, config.seed)
+        examples = build_controlled_examples(
+            sources,
+            tokenizer,
+            config.counts,
+            config.seed,
+            split_anchor=split_anchor,
+        )
     else:
         examples = build_native_examples(sources, config.counts, config.seed)
     examples = [example for example in examples if example.task in config.tasks]
@@ -79,14 +113,30 @@ def command_build_data(args: argparse.Namespace) -> None:
     manifest = {
         "config": str(Path(args.config).resolve()),
         "track": config.track,
+        "data_version": config.data_version,
         "seed": config.seed,
         "model_tokenizer": config.model.model_id,
+        "model_revision": config.model.revision,
         "datasets": dict(config.datasets),
         "revisions": dict(config.revisions),
+        "split_anchor": (
+            {
+                "path": str(split_anchor_path),
+                "sha256": hashlib.sha256(split_anchor_path.read_bytes()).hexdigest(),
+            }
+            if split_anchor_path is not None
+            else None
+        ),
         "counts": asdict(config.counts),
         "num_examples": len(examples),
         "sha256": digest,
         "audit": audit_examples(examples),
+        "known_native_boilerplate_audit": audit_known_native_boilerplate(examples),
+        "split_anchor_retention": (
+            audit_split_anchor(examples, split_anchor)
+            if split_anchor is not None
+            else None
+        ),
         "token_statistics": {
             "fertility_tokens_per_whitespace_word": fertility,
             "pairwise": pairwise_tokens,
@@ -105,10 +155,37 @@ def command_build_partitions(args: argparse.Namespace) -> None:
 
 
 def command_audit(args: argparse.Namespace) -> None:
+    if args.expected_examples_sha256 is not None:
+        actual_digest = hashlib.sha256(Path(args.examples).read_bytes()).hexdigest()
+        if actual_digest != args.expected_examples_sha256:
+            raise ValueError(
+                f"Example JSONL SHA-256 is {actual_digest}; "
+                f"expected {args.expected_examples_sha256}"
+            )
     examples = read_examples(args.examples)
     report: dict[str, object] = {"examples": audit_examples(examples)}
     if args.partitions:
-        report["partitions"] = audit_partitions(examples, read_partitions(args.partitions))
+        spec = read_partitions(args.partitions)
+        partition_report = audit_partitions(examples, spec)
+        report["partitions"] = partition_report
+        if args.expected_regime is not None and spec.regime != args.expected_regime:
+            raise ValueError(
+                f"Partition regime is {spec.regime}; expected {args.expected_regime}"
+            )
+        if (
+            args.expected_partition_seed is not None
+            and spec.seed != args.expected_partition_seed
+        ):
+            raise ValueError(
+                f"Partition seed is {spec.seed}; expected {args.expected_partition_seed}"
+            )
+        if args.strict and (
+            not partition_report["pool_hash_matches"]
+            or partition_report["unknown_ids"]
+            or partition_report["missing_ids"]
+            or partition_report["non_unique_assignments"]
+        ):
+            raise ValueError("Partition integrity audit failed")
     _json(report)
 
 
@@ -238,6 +315,10 @@ def build_parser() -> argparse.ArgumentParser:
     audit = subparsers.add_parser("audit")
     audit.add_argument("--examples", required=True)
     audit.add_argument("--partitions")
+    audit.add_argument("--expected-regime", choices=["iid", "domain_only", "task_only", "coupled"])
+    audit.add_argument("--expected-partition-seed", type=int)
+    audit.add_argument("--expected-examples-sha256")
+    audit.add_argument("--strict", action="store_true")
     audit.set_defaults(func=command_audit)
 
     demo = subparsers.add_parser("lora-demo")

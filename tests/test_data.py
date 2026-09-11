@@ -7,9 +7,11 @@ from fedllm_heterogeneity.data import (
     SourceRecord,
     adapt_flowertune_row,
     audit_examples,
+    audit_known_native_boilerplate,
     build_controlled_examples,
+    select_source_splits_with_anchor,
 )
-from fedllm_heterogeneity.types import Domain
+from fedllm_heterogeneity.types import CanonicalExample, Domain
 
 
 class WhitespaceTokenizer:
@@ -63,6 +65,73 @@ def test_finance_label_is_excluded_from_controlled_text():
     assert "positive" not in source.text
 
 
+def test_clean_v2_removes_only_verified_native_boilerplate_and_preserves_id():
+    finance_row = {
+        "instruction": "What is the sentiment of this news? Please choose an answer from {negative/neutral/positive}.",
+        "input": "The company increased revenue substantially.",
+        "output": "positive",
+    }
+    legacy = adapt_flowertune_row("finance", finance_row, 7, data_version="legacy_v1")
+    clean = adapt_flowertune_row("finance", finance_row, 7, data_version="clean_v2")
+    assert legacy is not None and clean is not None
+    assert clean.source_id == legacy.source_id
+    assert clean.text == finance_row["input"]
+    assert clean.native_prompt == legacy.native_prompt
+    assert clean.removed_native_boilerplate == "finance_sentiment_instruction"
+
+    medical = adapt_flowertune_row(
+        "medical",
+        {
+            "instruction": "Answer this question truthfully",
+            "input": "What is X?",
+            "output": "X is a test answer.",
+        },
+        9,
+        data_version="clean_v2",
+    )
+    assert medical is not None
+    assert medical.text == "What is X?\n\nX is a test answer."
+    assert medical.removed_native_boilerplate == "medical_truthfulness_instruction"
+
+
+def test_split_anchor_preserves_eligible_rows_and_fills_missing_rows():
+    sources = [
+        SourceRecord(str(index), "general", "dataset", "text", "q", "a", index)
+        for index in (0, 2, 3, 4, 5)
+    ]
+    anchor = {"train": [0, 1], "validation": [2], "test": [3]}
+    selected = select_source_splits_with_anchor(
+        sources,
+        BuildCounts(train=2, validation=1, test=1),
+        seed=42,
+        anchored_row_indices=anchor,
+    )
+    assert [source.row_index for source in selected["validation"]] == [2]
+    assert [source.row_index for source in selected["test"]] == [3]
+    assert 0 in [source.row_index for source in selected["train"]]
+    all_rows = [source.row_index for values in selected.values() for source in values]
+    assert len(all_rows) == len(set(all_rows)) == 4
+
+
+def test_boilerplate_audit_checks_prompt_and_target():
+    examples = [
+        CanonicalExample(
+            example_id="example",
+            source_id="source",
+            domain="finance",
+            task="span_reconstruction",
+            prompt="Please choose an answer from {negative/neutral/positive}.",
+            target="answer from {negative/neutral",
+            split="train",
+            seed=42,
+            source_dataset="dataset",
+        )
+    ]
+    report = audit_known_native_boilerplate(examples)
+    assert any("finance" in key and "prompt" in key for key in report)
+    assert any("finance" in key and "target" in key for key in report)
+
+
 def test_controlled_build_is_deterministic_and_split_safe():
     tokenizer = WhitespaceTokenizer()
     counts = BuildCounts(train=2, validation=1, test=1)
@@ -75,4 +144,3 @@ def test_controlled_build_is_deterministic_and_split_safe():
     assert all(value == 0 for value in audit["source_overlap_across_splits"].values())
     assert set(item.task for item in first) == {"continuation", "span_reconstruction"}
     assert all(item.target for item in first)
-

@@ -114,3 +114,23 @@ class AggregationResult:
     effective_delta: Mapping[str, Any]
     diagnostics: AggregationDiagnostics
 
+
+@dataclass(frozen=True)
+class SymmetryProfile:
+    """Deterministic token-symmetry summary for one data split and text scope.
+
+    ``groups`` are normally the eight ``domain/task`` cells.  Counts and
+    distributions are kept as JSON-friendly summaries so the profile can be
+    archived without retaining examples or model checkpoints.
+    """
+
+    split: str
+    scope: str
+    tokenizer: str
+    groups: tuple[str, ...]
+    example_counts: Mapping[str, int]
+    token_counts: Mapping[str, int]
+    vocabulary_sizes: Mapping[str, int]
+    fertility_tokens_per_whitespace_unit: Mapping[str, float]
+    pairwise: tuple[Mapping[str, Any], ...]
+    domain_information: Mapping[str, Any] = field(default_factory=dict)

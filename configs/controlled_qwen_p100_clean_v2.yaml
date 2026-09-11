@@ -1,0 +1,55 @@
+name: controlled-qwen-0.5b-clean-v2-p100
+track: controlled
+seed: 42
+save_checkpoints: true
+num_clients: 16
+rounds: 8
+regimes: [iid, domain_only]
+aggregators: [factor_fedavg, fedex_lora]
+
+data:
+  version: clean_v2
+  split_anchor: controlled_source_splits_v1.json
+  tasks: [continuation, span_reconstruction]
+  datasets:
+    general: flwrlabs/alpaca-gpt4
+    finance: flwrlabs/fingpt-sentiment-train
+    medical: flwrlabs/medical-meadow-medical-flashcards
+    code: flwrlabs/code-alpaca-20k
+  revisions:
+    general: 227200cb2c43468a7c44d5e15a47967b10f51aaf
+    finance: d01aba2a91252c687bc35e4da659ab73ac70ea27
+    medical: bc33733afea65239aed2149aa79ea77742d28cc2
+    code: 993cf40c2e806a2641f388fb4026f30c4c73dc97
+  counts: {train: 512, validation: 128, test: 256}
+
+model:
+  id: Qwen/Qwen2.5-0.5B-Instruct
+  revision: 7ae557604adf67be50417f59c2c2f167def9a775
+  quantization_bits: null
+  lora_rank: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  lora_targets: [q_proj, v_proj]
+  ffa_lora: false
+
+train:
+  learning_rate: 0.0002
+  batch_size: 2
+  eval_batch_size: 2
+  local_steps: 10
+  max_length: 512
+  weight_decay: 0.0
+  gradient_clip_norm: 1.0
+
+analysis:
+  equivalence_margin: -0.05
+  worst_cell_margin: -0.10
+  bootstrap_samples: 10000
+  confidence: 0.95
+  # Performance-screen pilot: expensive transfer/gradient/LOO diagnostics are
+  # disabled and timed separately on a selected follow-up run.
+  diagnostic_rounds: []
+  probe_examples_per_cell: 32
+  gradient_probe_examples_per_client: 8
+  leave_one_out_rounds: []

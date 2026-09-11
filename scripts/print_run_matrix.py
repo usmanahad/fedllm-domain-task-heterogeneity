@@ -20,9 +20,15 @@ def main():
     parser.add_argument("--examples", default="artifacts/controlled_examples.jsonl")
     parser.add_argument("--output-root", default="artifacts/runs")
     parser.add_argument("--seeds", type=int, nargs="+", default=[42, 43, 44])
+    parser.add_argument("--partition-seed", type=int, default=42)
+    parser.add_argument("--data-tag", default="legacy-v1")
     args = parser.parse_args()
     config = load_config(args.config)
-    root = Path(args.output_root)
+    root = (
+        Path(args.output_root)
+        / args.data_tag
+        / f"partition-seed-{args.partition_seed}"
+    )
 
     for seed in args.seeds:
         print(
@@ -62,7 +68,10 @@ def main():
             )
         )
         for regime in config.regimes:
-            partitions = f"artifacts/partitions-{regime}.json"
+            partitions = (
+                f"artifacts/partitions-{args.data_tag}-"
+                f"pseed-{args.partition_seed}-{regime}.json"
+            )
             if regime == "coupled":
                 print(
                     command(
@@ -109,4 +118,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

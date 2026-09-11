@@ -9,10 +9,9 @@ questions that the original natural setup confounds:
 2. What changes when clients perform different **tasks**, independently of the
    domain of their text?
 
-The original notebooks are retained as provenance:
-
-- `fedavg-flowetune-phase1.ipynb`
-- `fedavg-flowertune-kaggle-2.ipynb`
+The two original exploratory notebooks are retained in the repository as
+provenance. The proposal and literature PDFs remain local and are intentionally
+excluded from the public repository.
 
 ## What is implemented
 
@@ -60,34 +59,43 @@ Then follow the pinned P100 setup in [`KAGGLE_P100.md`](KAGGLE_P100.md), startin
 at the PyTorch installation step. The copy-from-`/kaggle/input` step is not
 needed when the project is cloned.
 
-The local upload-only `kaggle-p100-runner.ipynb` automates the three-seed FedEx
-matrix across IID, domain-only, task-only, and coupled partitions. It emits one
-compact ZIP per seed/regime as soon as that run finishes. The notebook and
-research PDF inputs are intentionally excluded from this public repository.
+The local upload-only `kaggle-p100-runner.ipynb` now automates the locked
+clean-v2 pilot: one seed, IID and domain-only, each with factor FedAvg and
+FedEx-LoRA. It also runs one base and one centralized reference and emits one
+compact ZIP per federated arm. The notebook and research PDF inputs are
+intentionally excluded from this public repository.
 
-## Prepare the controlled dataset
+## Prepare the clean controlled dataset
 
 ```bash
 fedllm-heterogeneity build-data \
-  --config configs/controlled_qwen.yaml \
-  --output artifacts/controlled_examples.jsonl
+  --config configs/controlled_qwen_p100_clean_v2.yaml \
+  --output artifacts/controlled_examples_clean_v2.jsonl
 
 fedllm-heterogeneity build-partitions \
-  --examples artifacts/controlled_examples.jsonl \
-  --regime coupled \
+  --examples artifacts/controlled_examples_clean_v2.jsonl \
+  --regime domain_only \
   --clients 16 \
   --seed 42 \
-  --output artifacts/partitions-coupled.json
+  --output artifacts/partitions-clean-v2-pseed-42-domain_only.json
 
 fedllm-heterogeneity audit \
-  --examples artifacts/controlled_examples.jsonl \
-  --partitions artifacts/partitions-coupled.json
+  --examples artifacts/controlled_examples_clean_v2.jsonl \
+  --partitions artifacts/partitions-clean-v2-pseed-42-domain_only.json \
+  --expected-regime domain_only \
+  --expected-partition-seed 42 \
+  --expected-examples-sha256 \
+    ab07a92891d0ccaeaa0a77ed570f5fbcf6c31395e3c1c5b79185e102b30d6418 \
+  --strict
 ```
 
-`build-data` downloads the configured Hugging Face datasets. It selects source
-rows before creating task views, so a source can never cross data splits. The
-manifest records hashes, dataset revisions when available, and every transform
-seed.
+`build-data` downloads pinned revisions of the four configured Hugging Face
+datasets. Clean-v2 removes exact known FlowerTune native-task instructions from
+the controlled source text, uses a versioned source-row anchor, and selects
+sources before creating task views, so a source can never cross data splits.
+The manifest records content hashes, revisions, retention, and every transform
+seed. See [`baseline/controlled-clean-v2.json`](baseline/controlled-clean-v2.json)
+for the frozen CPU integrity result.
 
 ## Validate aggregation before training
 
@@ -113,24 +121,27 @@ inside a notebook. `fedllm_heterogeneity.training` contains the PEFT model and
 client-training helpers, while `fedllm_heterogeneity.flower_app` provides the
 Flower-facing client-data contract and aggregation strategy adapter.
 
-Generate the complete three-seed command matrix without starting any jobs:
+Generate the locked four-run pilot command matrix without starting any jobs:
 
 ```bash
 PYTHONPATH=src python scripts/print_run_matrix.py \
-  --config configs/controlled_qwen.yaml \
-  --seeds 42 43 44
+  --config configs/controlled_qwen_p100_clean_v2.yaml \
+  --examples artifacts/controlled_examples_clean_v2.jsonl \
+  --seeds 42 \
+  --data-tag clean-v2 \
+  --partition-seed 42
 ```
 
 For one local sequential run:
 
 ```bash
 fedllm-heterogeneity run-local \
-  --config configs/controlled_qwen.yaml \
-  --examples artifacts/controlled_examples.jsonl \
-  --partitions artifacts/partitions-coupled.json \
+  --config configs/controlled_qwen_p100_clean_v2.yaml \
+  --examples artifacts/controlled_examples_clean_v2.jsonl \
+  --partitions artifacts/partitions-clean-v2-pseed-42-domain_only.json \
   --aggregation fedex_lora \
   --seed 42 \
-  --output artifacts/runs/seed-42/coupled/fedex_lora
+  --output artifacts/runs/clean-v2/partition-seed-42/seed-42/domain_only/fedex_lora
 ```
 
 The equivalent Flower simulation is configured in `pyproject.toml`:
@@ -169,10 +180,11 @@ provided and should only run in an isolated Kaggle runtime.
   weighting is enabled only after attribution is validated against measured
   leave-one-client-out effects.
 
-The P100 configuration evaluates functional transfer at rounds 1 and 8 and, at
-round 8, compares the full FedEx aggregate with 16 leave-one-client-out
-aggregates on every domain-task cell. Checkpoint saving is disabled there to
-keep Kaggle outputs small; the JSON diagnostics needed for causal client-harm
-analysis are retained. ProToken itself is not vendored because its reference
-reproduction targets an A100-class Linux machine with substantially more
-RAM/storage than a normal Kaggle session.
+The locked P100 pilot disables functional-transfer, gradient, and
+leave-one-client-out diagnostics. This prevents diagnostic evaluation from
+dominating the initial performance screen. It retains final checkpoints for a
+later native evaluation, while the compact download ZIPs exclude all tensor
+files. A selected follow-up run will time and compute the expensive diagnostics
+only after the pilot establishes which comparison is worth pursuing. ProToken
+itself is not vendored because its reference reproduction targets an A100-class
+Linux machine with substantially more RAM/storage than a normal Kaggle session.

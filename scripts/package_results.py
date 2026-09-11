@@ -59,6 +59,7 @@ def package_results(
     output: Path,
     *,
     include_smoke: bool = False,
+    data_manifest: Path | None = None,
 ) -> tuple[int, int, int]:
     project = project.resolve()
     artifacts = artifacts.resolve()
@@ -95,9 +96,9 @@ def package_results(
 
         for path in selected:
             add_file(path, result_archive_path(path))
-        data_manifest = project / "artifacts/controlled_examples.jsonl.manifest.json"
-        if data_manifest.is_file():
-            add_file(data_manifest, Path("provenance/data-manifest.json"))
+        manifest = data_manifest or project / "artifacts/controlled_examples.jsonl.manifest.json"
+        if manifest.is_file():
+            add_file(manifest, Path("provenance/data-manifest.json"))
         seed_root = next(
             (
                 path
@@ -119,6 +120,8 @@ def package_results(
         if configs.is_dir():
             for path in sorted(configs.glob("*.yaml")):
                 add_file(path, Path("provenance/configs") / path.name)
+            for path in sorted(configs.glob("*source_splits*.json")):
+                add_file(path, Path("provenance/configs") / path.name)
         archive.writestr("provenance/git-commit.txt", git_revision(project) + "\n")
 
     return len(selected), included_bytes, omitted_bytes
@@ -134,6 +137,7 @@ def main() -> None:
         default=Path("/kaggle/working/fedllm-results.zip"),
     )
     parser.add_argument("--include-smoke", action="store_true")
+    parser.add_argument("--data-manifest", type=Path)
     args = parser.parse_args()
     artifacts = args.artifacts
     if not artifacts.is_absolute():
@@ -143,6 +147,11 @@ def main() -> None:
         artifacts,
         args.output,
         include_smoke=args.include_smoke,
+        data_manifest=(
+            args.data_manifest
+            if args.data_manifest is None or args.data_manifest.is_absolute()
+            else args.project / args.data_manifest
+        ),
     )
     print(f"Archive: {args.output.resolve()}")
     print(f"Result files: {count}")

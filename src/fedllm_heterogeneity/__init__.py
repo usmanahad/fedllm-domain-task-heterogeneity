@@ -2,6 +2,7 @@
 
 from .types import (
     CanonicalExample,
+    SymmetryProfile,
     ClientUpdate,
     Domain,
     PartitionRegime,
@@ -11,6 +12,7 @@ from .types import (
 
 __all__ = [
     "CanonicalExample",
+    "SymmetryProfile",
     "ClientUpdate",
     "Domain",
     "PartitionRegime",
@@ -19,4 +21,3 @@ __all__ = [
 ]
 
 __version__ = "0.1.0"
-
